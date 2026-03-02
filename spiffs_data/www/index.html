@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MimiClaw Serial & WS Console</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap");
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --panel-2: #0b1220;
+        --accent: #22d3ee;
+        --accent-2: #a3e635;
+        --text: #e5e7eb;
+        --muted: #94a3b8;
+        --danger: #f43f5e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+        color: var(--text);
+        background: radial-gradient(1200px 600px at 10% -10%, #1f2937 0%, #0f172a 40%, #0b1120 100%);
+        min-height: 100vh;
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      .title {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .chip {
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, #22d3ee, #a3e635);
+        color: #0b1120;
+        font-weight: 600;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 16px;
+      }
+      .panel {
+        background: rgba(17, 24, 39, 0.85);
+        border: 1px solid #1f2937;
+        border-radius: 16px;
+        padding: 16px;
+        backdrop-filter: blur(8px);
+      }
+      .panel h3 {
+        margin: 0 0 10px;
+        font-size: 16px;
+        letter-spacing: 0.3px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .row input, .row select, .row button {
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+      .row input { flex: 1; min-width: 140px; }
+      .row button {
+        cursor: pointer;
+        background: linear-gradient(135deg, #1f2937, #0b1220);
+      }
+      .row button.primary {
+        border-color: #0ea5e9;
+        background: linear-gradient(135deg, #0ea5e9, #22d3ee);
+        color: #04111d;
+        font-weight: 600;
+      }
+      .row button.danger {
+        border-color: #fb7185;
+        background: #3f1d2a;
+        color: #fecdd3;
+      }
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .log {
+        height: 420px;
+        overflow: auto;
+        background: #0b1020;
+        border-radius: 12px;
+        padding: 12px;
+        border: 1px solid #1f2937;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .log .line { margin-bottom: 6px; }
+      .log .rx { color: #a3e635; }
+      .log .tx { color: #22d3ee; }
+      .log .err { color: #f43f5e; }
+      .footer {
+        margin-top: 14px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #0f1b30;
+        border: 1px solid #1f2937;
+      }
+      @media (max-width: 860px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="title">
+        <div class="chip">MimiClaw</div>
+        <h1 style="margin:0;font-size:22px;">Device Console</h1>
+      </div>
+      <div class="grid">
+        <div class="panel">
+          <h3>Connection</h3>
+          <div class="row">
+            <select id="mode">
+              <option value="ws">WebSocket (IP)</option>
+              <option value="serial">Web Serial (USB)</option>
+            </select>
+            <input id="host" placeholder="Host (e.g. 192.168.1.10)" />
+            <input id="port" placeholder="Port" value="18789" />
+          </div>
+          <div class="row">
+            <button class="primary" id="connect">Connect</button>
+            <button class="danger" id="disconnect">Disconnect</button>
+          </div>
+          <div class="status" id="status">Status: idle</div>
+          <div class="footer">
+            WebSocket path: <span class="pill">/ws</span>
+            <span id="serialHint" style="display:none;">Web Serial requires Chrome/Edge + HTTPS/localhost.</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Send</h3>
+          <div class="row">
+            <input id="chatId" placeholder="chat_id (optional)" />
+          </div>
+          <div class="row">
+            <input id="input" placeholder="Type a message" />
+            <button class="primary" id="send">Send</button>
+          </div>
+          <div class="footer">
+            For Web Serial, this sends <span class="pill">chat &lt;text&gt;</span>.
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <h3>Log</h3>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+
+    <script>
+      const log = (msg, cls) => {
+        const el = document.createElement("div");
+        el.className = "line " + (cls || "");
+        el.textContent = msg;
+        const box = document.getElementById("log");
+        box.appendChild(el);
+        box.scrollTop = box.scrollHeight;
+      };
+
+      let ws = null;
+      let port = null;
+      let writer = null;
+      let reader = null;
+      let readLoop = null;
+
+      const setStatus = (s) => {
+        document.getElementById("status").textContent = "Status: " + s;
+      };
+
+      const modeSelect = document.getElementById("mode");
+      const serialHint = document.getElementById("serialHint");
+      modeSelect.addEventListener("change", () => {
+        serialHint.style.display = modeSelect.value === "serial" ? "inline" : "none";
+      });
+
+      const defaultHost = window.location.hostname || "192.168.1.10";
+      document.getElementById("host").value = defaultHost;
+
+      async function connectWS() {
+        const host = document.getElementById("host").value.trim();
+        const portVal = document.getElementById("port").value.trim() || "18789";
+        const proto = window.location.protocol === "https:" ? "wss" : "ws";
+        const url = `${proto}://${host}:${portVal}/ws`;
+        ws = new WebSocket(url);
+        setStatus("connecting (WS)");
+        ws.onopen = () => { setStatus("connected (WS)"); log("WS connected: " + url); };
+        ws.onclose = () => { setStatus("closed (WS)"); log("WS closed", "err"); ws = null; };
+        ws.onerror = () => { log("WS error", "err"); };
+        ws.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data.type === "response") {
+              log("AI: " + data.content, "rx");
+            } else {
+              log("WS: " + ev.data, "rx");
+            }
+          } catch {
+            log("WS: " + ev.data, "rx");
+          }
+        };
+      }
+
+      async function connectSerial() {
+        if (!("serial" in navigator)) {
+          log("Web Serial not supported in this browser.", "err");
+          return;
+        }
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        const textDecoder = new TextDecoderStream();
+        readLoop = port.readable.pipeTo(textDecoder.writable);
+        reader = textDecoder.readable.getReader();
+
+        const textEncoder = new TextEncoderStream();
+        textEncoder.readable.pipeTo(port.writable);
+        writer = textEncoder.writable.getWriter();
+
+        setStatus("connected (Serial)");
+        log("Serial connected");
+
+        (async () => {
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value) log(value.replace(/\r?\n$/, ""), "rx");
+            }
+          } catch (e) {
+            log("Serial read error: " + e, "err");
+          }
+        })();
+      }
+
+      async function disconnectAll() {
+        if (ws) { ws.close(); ws = null; }
+        if (reader) { reader.releaseLock(); reader = null; }
+        if (writer) { writer.releaseLock(); writer = null; }
+        if (readLoop) { await readLoop.catch(() => {}); readLoop = null; }
+        if (port) { await port.close(); port = null; }
+        setStatus("idle");
+      }
+
+      document.getElementById("connect").addEventListener("click", async () => {
+        await disconnectAll();
+        if (modeSelect.value === "ws") {
+          connectWS();
+        } else {
+          connectSerial();
+        }
+      });
+      document.getElementById("disconnect").addEventListener("click", disconnectAll);
+
+      document.getElementById("send").addEventListener("click", async () => {
+        const text = document.getElementById("input").value.trim();
+        if (!text) return;
+        if (modeSelect.value === "ws") {
+          if (!ws || ws.readyState !== 1) {
+            log("WS not connected", "err");
+            return;
+          }
+          const chatId = document.getElementById("chatId").value.trim();
+          const payload = { type: "message", content: text };
+          if (chatId) payload.chat_id = chatId;
+          ws.send(JSON.stringify(payload));
+          log("You: " + text, "tx");
+        } else {
+          if (!writer) {
+            log("Serial not connected", "err");
+            return;
+          }
+          const line = "chat " + text + "\n";
+          await writer.write(line);
+          log("You: " + text, "tx");
+        }
+        document.getElementById("input").value = "";
+      });
+    </script>
+  </body>
+</html>

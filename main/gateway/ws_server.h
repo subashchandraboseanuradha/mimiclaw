@@ -6,6 +6,7 @@
  * Initialize and start the WebSocket server on MIMI_WS_PORT.
  * Allows external clients to interact with the Agent via JSON messages.
  *
+ * WebSocket path: /ws
  * Protocol:
  *   Inbound:  {"type":"message","content":"hello","chat_id":"ws_client1"}
  *   Outbound: {"type":"response","content":"Hi!","chat_id":"ws_client1"}

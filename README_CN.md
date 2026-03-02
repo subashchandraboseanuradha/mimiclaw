@@ -173,6 +173,14 @@ mimi> clear_proxy                    # 清除代理
 
 > **提示**：确保 ESP32-S3 和代理机器在同一局域网。Clash Verge 在「设置 → 允许局域网」中开启。
 
+### Web UI（HTTP + WebSocket）
+
+MimiClaw 会在和 WebSocket 同一端口提供内置网页：
+
+- 打开：`http://<device_ip>:18789/`
+- WebSocket 端点：`ws://<device_ip>:18789/ws`
+- 同一个 `spiffs_data/www/index.html` 也可以放到任意静态站点上使用，连接设备 IP 即可。
+
 ### CLI 命令（通过 UART/COM 口连接）
 
 通过串口连接即可配置和调试。**配置命令**让你无需重新编译就能修改设置 — 随时随地插上 USB 线就能改。

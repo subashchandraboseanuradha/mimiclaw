@@ -158,6 +158,14 @@ idf.py -p PORT flash monitor
 >
 > </details>
 
+### Web UI (HTTP + WebSocket)
+
+MimiClaw serves a built-in UI over HTTP on the same port as the WebSocket server.
+
+- Open: `http://<device_ip>:18789/`
+- WebSocket endpoint: `ws://<device_ip>:18789/ws`
+- The same `spiffs_data/www/index.html` can be hosted on any static server and pointed to your device IP.
+
 ### CLI Commands (via UART/COM port)
 
 Connect via serial to configure or debug. **Config commands** let you change settings without recompiling — just plug in a USB cable anywhere.

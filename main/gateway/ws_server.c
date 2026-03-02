@@ -12,6 +12,29 @@ static const char *TAG = "ws";
 
 static httpd_handle_t s_server = NULL;
 
+static esp_err_t http_index_handler(httpd_req_t *req)
+{
+    const char *path = MIMI_SPIFFS_BASE "/www/index.html";
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "UI not found");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "text/html");
+    char buf[512];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+            fclose(f);
+            httpd_resp_sendstr_chunk(req, NULL);
+            return ESP_FAIL;
+        }
+    }
+    fclose(f);
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
 /* Simple client tracking */
 typedef struct {
     int fd;
@@ -155,16 +178,32 @@ esp_err_t ws_server_start(void)
         return ret;
     }
 
+    /* Register HTTP UI */
+    httpd_uri_t index_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = http_index_handler,
+    };
+    httpd_register_uri_handler(s_server, &index_uri);
+
+    httpd_uri_t index_html_uri = {
+        .uri = "/index.html",
+        .method = HTTP_GET,
+        .handler = http_index_handler,
+    };
+    httpd_register_uri_handler(s_server, &index_html_uri);
+
     /* Register WebSocket URI */
     httpd_uri_t ws_uri = {
-        .uri = "/",
+        .uri = "/ws",
         .method = HTTP_GET,
         .handler = ws_handler,
         .is_websocket = true,
     };
     httpd_register_uri_handler(s_server, &ws_uri);
 
-    ESP_LOGI(TAG, "WebSocket server started on port %d", MIMI_WS_PORT);
+    ESP_LOGI(TAG, "HTTP UI: http://<device_ip>:%d/", MIMI_WS_PORT);
+    ESP_LOGI(TAG, "WebSocket server started on port %d (path: /ws)", MIMI_WS_PORT);
     return ESP_OK;
 }
 
