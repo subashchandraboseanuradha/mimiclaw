@@ -13,6 +13,7 @@
 #include "skills/skill_loader.h"
 #include "bus/message_bus.h"
 #include "wecom/wecom_bot.h"
+#include "bench/bench.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -621,6 +622,25 @@ static int cmd_restart(int argc, char **argv)
     return 0;  /* unreachable */
 }
 
+/* --- bench command --- */
+static int cmd_bench(int argc, char **argv)
+{
+    const char *name = (argc >= 2) ? argv[1] : "all";
+    char *out = calloc(1, 2048);
+    if (!out) {
+        printf("Out of memory.\n");
+        return 1;
+    }
+    esp_err_t err = bench_run(name, out, 2048);
+    printf("%s", out[0] ? out : "(empty)\n");
+    free(out);
+    if (err != ESP_OK) {
+        printf("bench error: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    return 0;
+}
+
 esp_err_t serial_cli_init(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -812,6 +832,14 @@ esp_err_t serial_cli_init(void)
         .func = &cmd_chat,
     };
     esp_console_cmd_register(&chat_cmd);
+
+    /* bench */
+    esp_console_cmd_t bench_cmd = {
+        .command = "bench",
+        .help = "Run benchmarks: bench [all|cpu|mem|net|llm]",
+        .func = &cmd_bench,
+    };
+    esp_console_cmd_register(&bench_cmd);
 
     /* set_search_key */
     search_key_args.key = arg_str1(NULL, NULL, "<key>", "Brave Search API key");

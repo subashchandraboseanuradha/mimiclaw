@@ -10,6 +10,7 @@ idf_component_register(
         "wifi/wifi_manager.c"
         "telegram/telegram_bot.c"
         "llm/llm_proxy.c"
+        "bench/bench.c"
         "wecom/wecom_bot.c"
         "agent/agent_loop.c"
         "agent/context_builder.c"

@@ -1,6 +1,7 @@
 #include "ws_server.h"
 #include "mimi_config.h"
 #include "bus/message_bus.h"
+#include "bench/bench.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -43,6 +44,28 @@ typedef struct {
 } ws_client_t;
 
 static ws_client_t s_clients[MIMI_WS_MAX_CLIENTS];
+
+typedef struct {
+    char chat_id[32];
+    char name[16];
+} bench_req_t;
+
+static void bench_task(void *arg)
+{
+    bench_req_t *req = (bench_req_t *)arg;
+    char *out = calloc(1, 2048);
+    if (!out) {
+        ws_server_send(req->chat_id, "bench: out of memory");
+        free(req);
+        vTaskDelete(NULL);
+        return;
+    }
+    bench_run(req->name, out, 2048);
+    ws_server_send(req->chat_id, out);
+    free(out);
+    free(req);
+    vTaskDelete(NULL);
+}
 
 static ws_client_t *find_client_by_fd(int fd)
 {
@@ -156,6 +179,31 @@ static esp_err_t ws_handler(httpd_req_t *req)
         msg.content = strdup(content->valuestring);
         if (msg.content) {
             message_bus_push_inbound(&msg);
+        }
+    } else if (type && cJSON_IsString(type) && strcmp(type->valuestring, "bench") == 0) {
+        const char *chat_id = client ? client->chat_id : "ws_unknown";
+        cJSON *cid = cJSON_GetObjectItem(root, "chat_id");
+        if (cid && cJSON_IsString(cid)) {
+            chat_id = cid->valuestring;
+            if (client) {
+                strncpy(client->chat_id, chat_id, sizeof(client->chat_id) - 1);
+            }
+        }
+        const char *name = "all";
+        cJSON *bench_name = cJSON_GetObjectItem(root, "name");
+        if (bench_name && cJSON_IsString(bench_name) && bench_name->valuestring[0]) {
+            name = bench_name->valuestring;
+        }
+        bench_req_t *req = calloc(1, sizeof(bench_req_t));
+        if (!req) {
+            ws_server_send(chat_id, "bench: out of memory");
+        } else {
+            strncpy(req->chat_id, chat_id, sizeof(req->chat_id) - 1);
+            strncpy(req->name, name, sizeof(req->name) - 1);
+            if (xTaskCreate(bench_task, "bench_task", 4096, req, 5, NULL) != pdPASS) {
+                ws_server_send(chat_id, "bench: failed to start task");
+                free(req);
+            }
         }
     }
 

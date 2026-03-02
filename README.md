@@ -165,6 +165,7 @@ MimiClaw serves a built-in UI over HTTP on the same port as the WebSocket server
 - Open: `http://<device_ip>:18789/`
 - WebSocket endpoint: `ws://<device_ip>:18789/ws`
 - The same `spiffs_data/www/index.html` can be hosted on any static server and pointed to your device IP.
+- The UI includes a Benchmark panel (WebSocket mode only).
 
 ### CLI Commands (via UART/COM port)
 

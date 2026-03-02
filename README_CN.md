@@ -180,6 +180,7 @@ MimiClaw 会在和 WebSocket 同一端口提供内置网页：
 - 打开：`http://<device_ip>:18789/`
 - WebSocket 端点：`ws://<device_ip>:18789/ws`
 - 同一个 `spiffs_data/www/index.html` 也可以放到任意静态站点上使用，连接设备 IP 即可。
+- 页面内置 Benchmark 面板（仅 WebSocket 模式可用）。
 
 ### CLI 命令（通过 UART/COM 口连接）
 

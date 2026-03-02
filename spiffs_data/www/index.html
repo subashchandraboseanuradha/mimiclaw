@@ -169,16 +169,39 @@
       </div>
 
       <div class="panel" style="margin-top:16px;">
+        <h3>Benchmark</h3>
+        <div class="row">
+          <select id="benchName">
+            <option value="all">all</option>
+            <option value="cpu">cpu</option>
+            <option value="mem">mem</option>
+            <option value="net">net</option>
+            <option value="llm">llm</option>
+          </select>
+          <button class="primary" id="benchRun">Run</button>
+        </div>
+        <div class="footer">
+          Benchmark runs only in WebSocket mode.
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
         <h3>Log</h3>
         <div class="log" id="log"></div>
       </div>
     </div>
 
     <script>
+      const nowStamp = () => {
+        const d = new Date();
+        const pad = (n, w = 2) => String(n).padStart(w, "0");
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+      };
+
       const log = (msg, cls) => {
         const el = document.createElement("div");
         el.className = "line " + (cls || "");
-        el.textContent = msg;
+        el.textContent = `[${nowStamp()}] ${msg}`;
         const box = document.getElementById("log");
         box.appendChild(el);
         box.scrollTop = box.scrollHeight;
@@ -300,6 +323,23 @@
           log("You: " + text, "tx");
         }
         document.getElementById("input").value = "";
+      });
+
+      document.getElementById("benchRun").addEventListener("click", async () => {
+        if (modeSelect.value !== "ws") {
+          log("Benchmark requires WebSocket mode.", "err");
+          return;
+        }
+        if (!ws || ws.readyState !== 1) {
+          log("WS not connected", "err");
+          return;
+        }
+        const name = document.getElementById("benchName").value;
+        const chatId = document.getElementById("chatId").value.trim();
+        const payload = { type: "bench", name };
+        if (chatId) payload.chat_id = chatId;
+        ws.send(JSON.stringify(payload));
+        log("Bench started: " + name, "tx");
       });
     </script>
   </body>
