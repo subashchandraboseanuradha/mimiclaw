@@ -26,6 +26,24 @@ static const char *TAG = "media_tool";
 #define MEDIA_PATH_MAX 96
 
 static char s_api_key[320] = {0};
+static char s_last_capture_path[MEDIA_PATH_MAX] = {0};
+
+static void set_last_capture_path(const char *path)
+{
+    if (!path || !path[0]) return;
+    strncpy(s_last_capture_path, path, sizeof(s_last_capture_path) - 1);
+    s_last_capture_path[sizeof(s_last_capture_path) - 1] = '\0';
+}
+
+esp_err_t tool_media_take_last_capture_path(char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return ESP_ERR_INVALID_ARG;
+    if (s_last_capture_path[0] == '\0') return ESP_ERR_NOT_FOUND;
+    strncpy(out, s_last_capture_path, out_size - 1);
+    out[out_size - 1] = '\0';
+    s_last_capture_path[0] = '\0';
+    return ESP_OK;
+}
 
 static void log_http_client_error(esp_http_client_handle_t client,
                                   const char *label,
@@ -119,6 +137,22 @@ static bool json_get_bool(cJSON *root, const char *key, bool def)
     cJSON *item = cJSON_GetObjectItem(root, key);
     if (item && cJSON_IsBool(item)) return cJSON_IsTrue(item);
     return def;
+}
+
+static int parse_retry_after_ms(const char *body)
+{
+    if (!body) return -1;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return -1;
+    cJSON *retry = cJSON_GetObjectItem(root, "retry_after");
+    int ms = -1;
+    if (cJSON_IsNumber(retry)) {
+        double seconds = retry->valuedouble;
+        if (seconds < 0) seconds = 0;
+        ms = (int)(seconds * 1000.0);
+    }
+    cJSON_Delete(root);
+    return ms;
 }
 
 static void ensure_media_dir(void)
@@ -510,6 +544,8 @@ esp_err_t tool_camera_capture_execute(const char *input_json, char *output, size
     if (err == ESP_ERR_NOT_SUPPORTED) {
         snprintf(output, output_size, "camera capture not supported on this build");
     } else if (err == ESP_OK) {
+        const char *final_path = out_path[0] ? out_path : path;
+        set_last_capture_path(final_path);
         snprintf(output, output_size, "{\"path\":\"%s\"}", out_path[0] ? out_path : path);
     } else {
         snprintf(output, output_size, "camera capture failed: %s", esp_err_to_name(err));
@@ -613,6 +649,9 @@ esp_err_t tool_observe_scene_execute(const char *input_json, char *output, size_
     if (root) cJSON_Delete(root);
 
     const char *final_path = out_path[0] ? out_path : path;
+    if (do_capture) {
+        set_last_capture_path(final_path);
+    }
     cJSON *vreq = cJSON_CreateObject();
     cJSON_AddStringToObject(vreq, "path", final_path);
     cJSON_AddStringToObject(vreq, "prompt", prompt);
@@ -780,24 +819,39 @@ esp_err_t tool_vision_analyze_execute(const char *input_json, char *output, size
     esp_err_t err = ESP_OK;
     int attempts = 0;
     int backoff_ms = 500;
+    char *last_resp = NULL;
+    int last_status = 0;
+    esp_err_t last_err = ESP_OK;
     for (; attempts < 4; attempts++) {
         status = 0;
         resp = NULL;
         err = http_post_json(MIMI_ZHIPU_API_URL, MIMI_ZHIPU_API_HOST, MIMI_ZHIPU_API_PATH,
                              payload, &resp, &status);
+        if (resp) {
+            free(last_resp);
+            last_resp = resp;
+        }
+        last_status = status;
+        last_err = err;
         if (err != ESP_OK || status != 200) {
             ESP_LOGW(TAG, "Vision HTTP attempt %d failed: err=%s status=%d resp_len=%u",
                      attempts + 1, esp_err_to_name(err), status,
-                     resp ? (unsigned)strlen(resp) : 0);
+                     last_resp ? (unsigned)strlen(last_resp) : 0);
         }
         if (err == ESP_OK && status == 200) {
             break;
         }
-        if (resp) {
-            free(resp);
-            resp = NULL;
+        if (err == ESP_OK && status >= 400 && status < 500 && status != 429) {
+            /* Client errors won't succeed on retry */
+            break;
         }
-        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        if (status == 429) {
+            int retry_ms = parse_retry_after_ms(last_resp);
+            if (retry_ms < 0) retry_ms = backoff_ms;
+            vTaskDelay(pdMS_TO_TICKS(retry_ms));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        }
         backoff_ms = backoff_ms * 2;
         if (backoff_ms > 4000) backoff_ms = 4000;
     }
@@ -805,21 +859,24 @@ esp_err_t tool_vision_analyze_execute(const char *input_json, char *output, size
     if (data_url) free(data_url);
     if (root) cJSON_Delete(root);
 
-    if (err != ESP_OK) {
+    if (last_err != ESP_OK) {
         snprintf(output, output_size, "vision request failed after %d attempt(s): %s",
-                 attempts, esp_err_to_name(err));
-        free(resp);
-        return err;
+                 attempts, esp_err_to_name(last_err));
+        free(last_resp);
+        return last_err;
     }
-    if (status != 200) {
+    if (last_status != 200) {
         ESP_LOGW(TAG, "Vision API error body (len=%u): %.200s",
-                 resp ? (unsigned)strlen(resp) : 0, resp ? resp : "(null)");
-        snprintf(output, output_size, "vision API error %d: %.200s", status, resp ? resp : "");
-        free(resp);
+                 last_resp ? (unsigned)strlen(last_resp) : 0,
+                 last_resp ? last_resp : "(null)");
+        snprintf(output, output_size, "vision API error %d: %.200s",
+                 last_status, last_resp ? last_resp : "");
+        free(last_resp);
         return ESP_FAIL;
     }
+    resp = last_resp;
     if (!resp || resp[0] == '\0') {
-        snprintf(output, output_size, "vision API empty response (status %d)", status);
+        snprintf(output, output_size, "vision API empty response (status %d)", last_status);
         free(resp);
         return ESP_FAIL;
     }

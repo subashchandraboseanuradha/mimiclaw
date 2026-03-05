@@ -21,11 +21,36 @@ static esp_err_t stub_audio_record(const char *path, int duration_ms, char *out_
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+static esp_err_t stub_camera_set_framesize(int framesize)
+{
+    (void)framesize;
+    ESP_LOGW(TAG, "Camera control not supported in this build");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static esp_err_t stub_camera_set_quality(int quality)
+{
+    (void)quality;
+    ESP_LOGW(TAG, "Camera control not supported in this build");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static esp_err_t stub_camera_get_status(int *framesize, int *quality)
+{
+    if (framesize) *framesize = 0;
+    if (quality) *quality = 0;
+    ESP_LOGW(TAG, "Camera control not supported in this build");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 static bool stub_false(void) { return false; }
 
 static media_driver_t s_driver = {
     .camera_capture = stub_camera_capture,
     .audio_record = stub_audio_record,
+    .camera_set_framesize = stub_camera_set_framesize,
+    .camera_set_quality = stub_camera_set_quality,
+    .camera_get_status = stub_camera_get_status,
     .camera_ready = stub_false,
     .mic_ready = stub_false,
 };
@@ -61,6 +86,24 @@ esp_err_t media_audio_record(const char *path, int duration_ms, char *out_path, 
 {
     if (!s_driver.audio_record) return ESP_ERR_NOT_SUPPORTED;
     return s_driver.audio_record(path, duration_ms, out_path, out_size);
+}
+
+esp_err_t media_camera_set_framesize(int framesize)
+{
+    if (!s_driver.camera_set_framesize) return ESP_ERR_NOT_SUPPORTED;
+    return s_driver.camera_set_framesize(framesize);
+}
+
+esp_err_t media_camera_set_quality(int quality)
+{
+    if (!s_driver.camera_set_quality) return ESP_ERR_NOT_SUPPORTED;
+    return s_driver.camera_set_quality(quality);
+}
+
+esp_err_t media_camera_get_status(int *framesize, int *quality)
+{
+    if (!s_driver.camera_get_status) return ESP_ERR_NOT_SUPPORTED;
+    return s_driver.camera_get_status(framesize, quality);
 }
 
 bool media_camera_ready(void)

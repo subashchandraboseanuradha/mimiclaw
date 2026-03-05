@@ -4,6 +4,8 @@
 
 esp_err_t tool_media_init(void);
 
+esp_err_t tool_media_take_last_capture_path(char *out, size_t out_size);
+
 esp_err_t tool_camera_capture_execute(const char *input_json, char *output, size_t output_size);
 esp_err_t tool_audio_record_execute(const char *input_json, char *output, size_t output_size);
 esp_err_t tool_observe_scene_execute(const char *input_json, char *output, size_t output_size);

@@ -6,8 +6,12 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <strings.h>
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "nvs.h"
@@ -32,6 +36,53 @@ typedef struct {
     size_t len;
     size_t cap;
 } http_resp_t;
+
+static void log_http_client_error(esp_http_client_handle_t client,
+                                  const char *label,
+                                  esp_err_t err,
+                                  int status)
+{
+    int sock_errno = esp_http_client_get_errno(client);
+    int tls_code = 0;
+    int tls_flags = 0;
+    esp_err_t tls_err = esp_http_client_get_and_clear_last_tls_error(
+        client, &tls_code, &tls_flags);
+    ESP_LOGE(TAG,
+             "%s failed: err=%s status=%d errno=%d tls_err=%s tls_code=0x%x tls_flags=0x%x",
+             label, esp_err_to_name(err), status, sock_errno,
+             esp_err_to_name(tls_err), tls_code, tls_flags);
+}
+
+static bool retryable_http_err(esp_err_t err)
+{
+    return err != ESP_ERR_NO_MEM && err != ESP_ERR_INVALID_ARG;
+}
+
+static void backoff_delay_ms(int *backoff_ms)
+{
+    int jitter = (int)(esp_random() % 200);
+    int delay = *backoff_ms + jitter;
+    vTaskDelay(pdMS_TO_TICKS(delay));
+    *backoff_ms = (*backoff_ms < MIMI_HTTP_RETRY_MAX_MS / 2)
+                      ? (*backoff_ms * 2)
+                      : MIMI_HTTP_RETRY_MAX_MS;
+}
+
+static const char *guess_mime_type(const char *path)
+{
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0) {
+        return "image/jpeg";
+    }
+    if (strcasecmp(ext, ".png") == 0) {
+        return "image/png";
+    }
+    if (strcasecmp(ext, ".gif") == 0) {
+        return "image/gif";
+    }
+    return "application/octet-stream";
+}
 
 static void make_key(char *out, size_t out_size, const char *fmt, int index)
 {
@@ -120,13 +171,18 @@ static char *discord_http_request(const char *method, const char *path,
     if (!s_bot_token[0]) return NULL;
 
     int attempt = 0;
-    int backoff_ms = 500;
+    int backoff_ms = MIMI_HTTP_RETRY_BASE_MS;
 
-    while (attempt < 3) {
+    while (attempt < MIMI_DISCORD_HTTP_MAX_RETRY) {
         esp_err_t lock_err = net_mutex_lock(pdMS_TO_TICKS(MIMI_NET_MUTEX_TIMEOUT_MS));
         if (lock_err != ESP_OK) {
             ESP_LOGW(TAG, "HTTP lock failed: %s", esp_err_to_name(lock_err));
-            return NULL;
+            if (!retryable_http_err(lock_err) || attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+                return NULL;
+            }
+            backoff_delay_ms(&backoff_ms);
+            attempt++;
+            continue;
         }
         char url[256];
         snprintf(url, sizeof(url), "https://discord.com/api/v10%s", path);
@@ -174,15 +230,22 @@ static char *discord_http_request(const char *method, const char *path,
 
         esp_err_t err = esp_http_client_perform(client);
         int status = esp_http_client_get_status_code(client);
+        if (err != ESP_OK) {
+            log_http_client_error(client, "HTTP request", err, status);
+        }
         esp_http_client_cleanup(client);
         net_mutex_unlock();
 
         if (out_status) *out_status = status;
 
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
             free(resp.buf);
-            return NULL;
+            if (!retryable_http_err(err) || attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+                return NULL;
+            }
+            backoff_delay_ms(&backoff_ms);
+            attempt++;
+            continue;
         }
 
         if (status == 429) {
@@ -198,9 +261,7 @@ static char *discord_http_request(const char *method, const char *path,
         if (status >= 500) {
             ESP_LOGW(TAG, "Discord 5xx (%d), backing off %d ms", status, backoff_ms);
             free(resp.buf);
-            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
-            backoff_ms = backoff_ms * 2;
-            if (backoff_ms > 30000) backoff_ms = 30000;
+            backoff_delay_ms(&backoff_ms);
             attempt++;
             continue;
         }
@@ -494,13 +555,236 @@ esp_err_t discord_send_message(const char *channel_id, const char *text)
     return all_ok ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t discord_send_file(const char *channel_id, const char *path, const char *caption)
+{
+    if (!s_bot_token[0]) {
+        ESP_LOGW(TAG, "Cannot send file: no discord bot token");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!channel_id || !channel_id[0] || !path || !path[0]) return ESP_ERR_INVALID_ARG;
+
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0) {
+        ESP_LOGW(TAG, "File not found or empty: %s", path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const char *filename = strrchr(path, '/');
+    filename = filename ? filename + 1 : path;
+    const char *mime = guess_mime_type(path);
+
+    cJSON *payload = cJSON_CreateObject();
+    if (caption && caption[0]) {
+        cJSON_AddStringToObject(payload, "content", caption);
+    }
+    char *payload_json = cJSON_PrintUnformatted(payload);
+    cJSON_Delete(payload);
+    if (!payload_json) return ESP_ERR_NO_MEM;
+
+    const char *boundary = "----mimiBoundary9B4hSDJ8lP";
+    char part1[512];
+    char part2[512];
+    char closing[64];
+    int p1 = snprintf(part1, sizeof(part1),
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"payload_json\"\r\n"
+        "Content-Type: application/json\r\n\r\n"
+        "%s\r\n",
+        boundary, payload_json);
+    int p2 = snprintf(part2, sizeof(part2),
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"files[0]\"; filename=\"%s\"\r\n"
+        "Content-Type: %s\r\n\r\n",
+        boundary, filename, mime);
+    int p3 = snprintf(closing, sizeof(closing),
+        "\r\n--%s--\r\n", boundary);
+
+    free(payload_json);
+
+    if (p1 <= 0 || p1 >= (int)sizeof(part1) ||
+        p2 <= 0 || p2 >= (int)sizeof(part2) ||
+        p3 <= 0 || p3 >= (int)sizeof(closing)) {
+        ESP_LOGE(TAG, "Multipart header too large");
+        return ESP_FAIL;
+    }
+
+    size_t total_len = (size_t)p1 + (size_t)p2 + (size_t)st.st_size + (size_t)p3;
+    if (total_len > INT32_MAX) {
+        ESP_LOGE(TAG, "File too large for upload: %u bytes", (unsigned)total_len);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int attempt = 0;
+    int backoff_ms = MIMI_HTTP_RETRY_BASE_MS;
+
+    while (attempt < MIMI_DISCORD_HTTP_MAX_RETRY) {
+        esp_err_t lock_err = net_mutex_lock(pdMS_TO_TICKS(MIMI_NET_MUTEX_TIMEOUT_MS));
+        if (lock_err != ESP_OK) {
+            ESP_LOGW(TAG, "HTTP lock failed: %s", esp_err_to_name(lock_err));
+            if (!retryable_http_err(lock_err) || attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+                return lock_err;
+            }
+            backoff_delay_ms(&backoff_ms);
+            attempt++;
+            continue;
+        }
+
+        char url[256];
+        snprintf(url, sizeof(url), "https://discord.com/api/v10/channels/%s/messages", channel_id);
+
+        esp_http_client_config_t config = {
+            .url = url,
+            .timeout_ms = 60000,
+            .buffer_size = 2048,
+            .buffer_size_tx = 2048,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        if (!client) {
+            net_mutex_unlock();
+            return ESP_FAIL;
+        }
+
+        esp_http_client_set_method(client, HTTP_METHOD_POST);
+
+        char auth[160];
+        snprintf(auth, sizeof(auth), "Bot %s", s_bot_token);
+        esp_http_client_set_header(client, "Authorization", auth);
+        char content_type[128];
+        snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
+        esp_http_client_set_header(client, "Content-Type", content_type);
+        esp_http_client_set_header(client, "Accept", "application/json");
+
+        esp_err_t err = esp_http_client_open(client, (int)total_len);
+        if (err != ESP_OK) {
+            log_http_client_error(client, "HTTP upload open", err, 0);
+            esp_http_client_cleanup(client);
+            net_mutex_unlock();
+            if (!retryable_http_err(err) || attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+                return err;
+            }
+            backoff_delay_ms(&backoff_ms);
+            attempt++;
+            continue;
+        }
+
+        bool write_ok = true;
+        if (esp_http_client_write(client, part1, p1) != p1 ||
+            esp_http_client_write(client, part2, p2) != p2) {
+            write_ok = false;
+        }
+
+        FILE *f = NULL;
+        if (write_ok) {
+            f = fopen(path, "rb");
+            if (!f) {
+                write_ok = false;
+            }
+        }
+
+        if (write_ok && f) {
+            char buf[2048];
+            size_t n = 0;
+            while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+                int w = esp_http_client_write(client, buf, (int)n);
+                if (w < 0 || w != (int)n) {
+                    write_ok = false;
+                    break;
+                }
+            }
+            fclose(f);
+        }
+
+        if (write_ok) {
+            if (esp_http_client_write(client, closing, p3) != p3) {
+                write_ok = false;
+            }
+        }
+
+        esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+
+        http_resp_t resp = {
+            .buf = calloc(1, 512),
+            .len = 0,
+            .cap = 512,
+        };
+        if (resp.buf) {
+            char tmp[256];
+            int r = 0;
+            while ((r = esp_http_client_read(client, tmp, sizeof(tmp))) > 0) {
+                if (resp.len + r + 1 > resp.cap) {
+                    size_t new_cap = resp.cap * 2;
+                    char *nb = realloc(resp.buf, new_cap);
+                    if (!nb) break;
+                    resp.buf = nb;
+                    resp.cap = new_cap;
+                }
+                memcpy(resp.buf + resp.len, tmp, r);
+                resp.len += r;
+                resp.buf[resp.len] = '\0';
+            }
+        }
+
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        net_mutex_unlock();
+
+        if (!write_ok) {
+            free(resp.buf);
+            if (attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+                return ESP_FAIL;
+            }
+            backoff_delay_ms(&backoff_ms);
+            attempt++;
+            continue;
+        }
+
+        if (status == 429) {
+            int retry_ms = parse_retry_after_ms(resp.buf);
+            if (retry_ms < 0) retry_ms = backoff_ms;
+            free(resp.buf);
+            vTaskDelay(pdMS_TO_TICKS(retry_ms));
+            attempt++;
+            continue;
+        }
+        if (status >= 500) {
+            ESP_LOGW(TAG, "Discord upload 5xx (%d), backing off %d ms", status, backoff_ms);
+            free(resp.buf);
+            backoff_delay_ms(&backoff_ms);
+            attempt++;
+            continue;
+        }
+        if (status < 200 || status >= 300) {
+            ESP_LOGE(TAG, "Discord upload failed: status=%d body=%.120s",
+                     status, resp.buf ? resp.buf : "(null)");
+            free(resp.buf);
+            return ESP_FAIL;
+        }
+
+        free(resp.buf);
+        return ESP_OK;
+    }
+
+    return ESP_FAIL;
+}
+
 esp_err_t discord_send_typing(const char *channel_id)
 {
+    static int64_t s_last_typing_us = 0;
+
     if (!s_bot_token[0]) {
         ESP_LOGW(TAG, "Cannot send typing: no discord bot token");
         return ESP_ERR_INVALID_STATE;
     }
     if (!channel_id || !channel_id[0]) return ESP_ERR_INVALID_ARG;
+
+    int64_t now = esp_timer_get_time();
+    if (s_last_typing_us > 0 &&
+        (now - s_last_typing_us) < (int64_t)MIMI_DISCORD_TYPING_COOLDOWN_MS * 1000) {
+        return ESP_OK;
+    }
+    s_last_typing_us = now;
 
     char path[256];
     snprintf(path, sizeof(path), "/channels/%s/typing", channel_id);

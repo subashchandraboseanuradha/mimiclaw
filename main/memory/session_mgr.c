@@ -6,10 +6,20 @@
 #include <stdlib.h>
 #include <dirent.h>
 #include <time.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "esp_log.h"
 #include "cJSON.h"
 
 static const char *TAG = "session";
+
+static void ensure_session_dir(void)
+{
+    struct stat st;
+    if (stat(MIMI_SPIFFS_SESSION_DIR, &st) != 0) {
+        mkdir(MIMI_SPIFFS_SESSION_DIR, 0775);
+    }
+}
 
 static void session_path(const char *chat_id, char *buf, size_t size)
 {
@@ -18,6 +28,7 @@ static void session_path(const char *chat_id, char *buf, size_t size)
 
 esp_err_t session_mgr_init(void)
 {
+    ensure_session_dir();
     ESP_LOGI(TAG, "Session manager initialized at %s", MIMI_SPIFFS_SESSION_DIR);
     return ESP_OK;
 }
@@ -152,7 +163,7 @@ void session_list(void)
     struct dirent *entry;
     int count = 0;
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, "tg_") && strstr(entry->d_name, ".jsonl")) {
+        if (strstr(entry->d_name, ".jsonl")) {
             ESP_LOGI(TAG, "  Session: %s", entry->d_name);
             count++;
         }

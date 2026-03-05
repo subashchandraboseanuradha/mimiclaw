@@ -13,6 +13,7 @@ typedef struct {
 esp_err_t discord_bot_init(void);
 esp_err_t discord_bot_start(void);
 esp_err_t discord_send_message(const char *channel_id, const char *text);
+esp_err_t discord_send_file(const char *channel_id, const char *path, const char *caption);
 esp_err_t discord_send_typing(const char *channel_id);
 esp_err_t discord_set_token(const char *token);
 esp_err_t discord_add_channel(const char *channel_id);

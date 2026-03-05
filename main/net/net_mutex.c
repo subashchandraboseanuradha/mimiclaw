@@ -1,4 +1,5 @@
 #include "net/net_mutex.h"
+#include "mimi_config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -8,6 +9,7 @@ static const char *TAG = "net_mutex";
 static SemaphoreHandle_t s_net_mutex = NULL;
 static net_mutex_stats_t s_stats = {0};
 static portMUX_TYPE s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_last_start_us = 0;
 
 esp_err_t net_mutex_init(void)
 {
@@ -36,6 +38,33 @@ esp_err_t net_mutex_lock(TickType_t ticks_to_wait)
     }
     int64_t end = esp_timer_get_time();
     uint32_t wait_ms = (uint32_t)((end - start) / 1000);
+
+    /* Rate limit: enforce minimum interval between network jobs */
+    uint32_t rate_wait_ms = 0;
+    if (MIMI_NET_MIN_INTERVAL_MS > 0) {
+        int64_t last_start = 0;
+        portENTER_CRITICAL(&s_stats_mux);
+        last_start = s_last_start_us;
+        portEXIT_CRITICAL(&s_stats_mux);
+
+        int64_t now = esp_timer_get_time();
+        int64_t min_gap_us = (int64_t)MIMI_NET_MIN_INTERVAL_MS * 1000;
+        if (last_start > 0 && (now - last_start) < min_gap_us) {
+            int64_t diff = min_gap_us - (now - last_start);
+            rate_wait_ms = (uint32_t)((diff + 999) / 1000);
+            vTaskDelay(pdMS_TO_TICKS(rate_wait_ms));
+        }
+        portENTER_CRITICAL(&s_stats_mux);
+        s_last_start_us = esp_timer_get_time();
+        portEXIT_CRITICAL(&s_stats_mux);
+    } else {
+        portENTER_CRITICAL(&s_stats_mux);
+        s_last_start_us = esp_timer_get_time();
+        portEXIT_CRITICAL(&s_stats_mux);
+    }
+
+    wait_ms += rate_wait_ms;
+
     portENTER_CRITICAL(&s_stats_mux);
     s_stats.lock_count++;
     s_stats.last_wait_ms = wait_ms;

@@ -1,12 +1,16 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_spiffs.h"
+#include "esp_sntp.h"
 #include "nvs_flash.h"
 
 #include "mimi_config.h"
@@ -32,6 +36,50 @@
 #include "skills/skill_loader.h"
 
 static const char *TAG = "mimi";
+
+static bool time_is_sane(void)
+{
+    time_t now = time(NULL);
+    return now >= (time_t)MIMI_TIME_SYNC_MIN_VALID_TS;
+}
+
+static void time_sync_start_sntp(void)
+{
+    esp_sntp_stop();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.google.com");
+    esp_sntp_setservername(2, "time.cloudflare.com");
+    esp_sntp_init();
+}
+
+static esp_err_t time_sync_wait(uint32_t timeout_ms)
+{
+    if (time_is_sane()) return ESP_OK;
+
+    ESP_LOGI(TAG, "Syncing time via SNTP...");
+    time_sync_start_sntp();
+
+    int64_t start = esp_timer_get_time();
+    while (!time_is_sane()) {
+        if ((esp_timer_get_time() - start) / 1000 > timeout_ms) {
+            ESP_LOGW(TAG, "Time sync timed out");
+            esp_sntp_stop();
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    esp_sntp_stop();
+
+    time_t now = time(NULL);
+    struct tm local;
+    localtime_r(&now, &local);
+    char buf[64];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S %Z", &local);
+    ESP_LOGI(TAG, "Time synced: %s", buf);
+    return ESP_OK;
+}
 
 static esp_err_t init_nvs(void)
 {
@@ -144,6 +192,10 @@ void app_main(void)
     /* Input */
     button_Init();
 
+    /* Timezone for logs + localtime */
+    setenv("TZ", MIMI_TIMEZONE, 1);
+    tzset();
+
     /* Phase 1: Core infrastructure */
     ESP_ERROR_CHECK(init_nvs());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -178,6 +230,7 @@ void app_main(void)
         ESP_LOGI(TAG, "Waiting for WiFi connection...");
         if (wifi_manager_wait_connected(30000) == ESP_OK) {
             ESP_LOGI(TAG, "WiFi connected: %s", wifi_manager_get_ip());
+            time_sync_wait(MIMI_TIME_SYNC_TIMEOUT_MS);
 
             /* Outbound dispatch task should start first to avoid dropping early replies. */
             ESP_ERROR_CHECK((xTaskCreatePinnedToCore(

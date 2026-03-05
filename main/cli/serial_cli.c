@@ -16,6 +16,8 @@
 #include "bus/message_bus.h"
 #include "wecom/wecom_bot.h"
 #include "bench/bench.h"
+#include "media/media_driver.h"
+#include "media/camera_settings.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,6 +34,74 @@
 #include "argtable3/argtable3.h"
 
 static const char *TAG = "cli";
+
+/* --- cam_get / cam_set commands --- */
+static struct {
+    struct arg_str *framesize;
+    struct arg_int *quality;
+    struct arg_end *end;
+} cam_set_args;
+
+static int cmd_cam_get(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    int framesize = 0;
+    int quality = 0;
+    esp_err_t err = media_camera_get_status(&framesize, &quality);
+    if (err != ESP_OK) {
+        printf("Camera status not available: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    printf("Camera: framesize=%s quality=%d\n",
+           media_framesize_name(framesize), quality);
+    return 0;
+}
+
+static int cmd_cam_set(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&cam_set_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, cam_set_args.end, argv[0]);
+        return 1;
+    }
+
+    bool changed = false;
+    if (cam_set_args.framesize->count > 0) {
+        int fs = 0;
+        if (!media_framesize_from_name(cam_set_args.framesize->sval[0], &fs)) {
+            printf("Invalid framesize. Use one of: QQVGA QVGA VGA SVGA XGA SXGA UXGA HD FHD\n");
+            return 1;
+        }
+        esp_err_t err = media_camera_set_framesize(fs);
+        if (err != ESP_OK) {
+            printf("Set framesize failed: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        changed = true;
+    }
+
+    if (cam_set_args.quality->count > 0) {
+        int q = cam_set_args.quality->ival[0];
+        if (q < 0 || q > 63) {
+            printf("Invalid quality. Use 0-63 (lower is higher quality).\n");
+            return 1;
+        }
+        esp_err_t err = media_camera_set_quality(q);
+        if (err != ESP_OK) {
+            printf("Set quality failed: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        changed = true;
+    }
+
+    if (!changed) {
+        printf("Usage: cam_set [--framesize <QQVGA|QVGA|VGA|SVGA|XGA|SXGA|UXGA|HD|FHD>] [--quality <0-63>]\n");
+        return 1;
+    }
+
+    return cmd_cam_get(0, NULL);
+}
 
 /* --- wifi_set command --- */
 static struct {
@@ -807,6 +877,26 @@ esp_err_t serial_cli_init(void)
         .func = &cmd_wifi_scan,
     };
     esp_console_cmd_register(&wifi_scan_cmd);
+
+    /* cam_get */
+    esp_console_cmd_t cam_get_cmd = {
+        .command = "cam_get",
+        .help = "Show current camera settings",
+        .func = &cmd_cam_get,
+    };
+    esp_console_cmd_register(&cam_get_cmd);
+
+    /* cam_set */
+    cam_set_args.framesize = arg_str0(NULL, "framesize", "<size>", "QQVGA|QVGA|VGA|SVGA|XGA|SXGA|UXGA|HD|FHD");
+    cam_set_args.quality = arg_int0(NULL, "quality", "<0-63>", "JPEG quality (lower=better)");
+    cam_set_args.end = arg_end(2);
+    esp_console_cmd_t cam_set_cmd = {
+        .command = "cam_set",
+        .help = "Set camera params (e.g. cam_set --framesize VGA --quality 15)",
+        .func = &cmd_cam_set,
+        .argtable = &cam_set_args,
+    };
+    esp_console_cmd_register(&cam_set_cmd);
 
     /* set_tg_token */
     tg_token_args.token = arg_str1(NULL, NULL, "<token>", "Telegram bot token");

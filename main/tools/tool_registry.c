@@ -5,6 +5,7 @@
 #include "tools/tool_files.h"
 #include "tools/tool_cron.h"
 #include "tools/tool_media.h"
+#include "tools/tool_device_cli.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -206,6 +207,22 @@ esp_err_t tool_registry_init(void)
         .execute = tool_listen_transcribe_execute,
     };
     register_tool(&lt);
+
+    /* Register device_cli (camera tuning) */
+    mimi_tool_t dc = {
+        .name = "device_cli",
+        .description = "Execute a limited set of device CLI commands for camera tuning (cam_get, cam_set).",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{"
+            "\"command\":{\"type\":\"string\",\"description\":\"cam_get or cam_set\"},"
+            "\"framesize\":{\"type\":\"string\",\"description\":\"QQVGA|QVGA|VGA|SVGA|XGA|SXGA|UXGA|HD|FHD (cam_set)\"},"
+            "\"quality\":{\"type\":\"integer\",\"description\":\"JPEG quality 0-63 (lower=better), cam_set\"}"
+            "},"
+            "\"required\":[\"command\"]}",
+        .execute = tool_device_cli_execute,
+    };
+    register_tool(&dc);
 
     build_tools_json();
 

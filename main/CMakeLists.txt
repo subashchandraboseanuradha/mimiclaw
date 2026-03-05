@@ -13,6 +13,7 @@ idf_component_register(
         "llm/llm_proxy.c"
         "bench/bench.c"
         "media/media_driver.c"
+        "media/camera_settings.c"
         "media/xiao_s3_media.c"
         "net/net_mutex.c"
         "tools/tool_media.c"
@@ -31,6 +32,7 @@ idf_component_register(
         "tools/tool_web_search.c"
         "tools/tool_get_time.c"
         "tools/tool_files.c"
+        "tools/tool_device_cli.c"
         "skills/skill_loader.c"
     INCLUDE_DIRS
         "."

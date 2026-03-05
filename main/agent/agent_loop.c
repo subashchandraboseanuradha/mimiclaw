@@ -6,6 +6,7 @@
 #include "llm/llm_proxy.h"
 #include "memory/session_mgr.h"
 #include "tools/tool_registry.h"
+#include "tools/tool_media.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -185,7 +186,8 @@ static char *patch_tool_input_with_context(const llm_tool_call_t *call, const mi
 
 /* Build the user message with tool_result blocks */
 static cJSON *build_tool_results(const llm_response_t *resp, const mimi_msg_t *msg,
-                                 char *tool_output, size_t tool_output_size)
+                                 char *tool_output, size_t tool_output_size,
+                                 char *captured_image, size_t captured_image_size)
 {
     cJSON *content = cJSON_CreateArray();
 
@@ -203,6 +205,13 @@ static cJSON *build_tool_results(const llm_response_t *resp, const mimi_msg_t *m
         free(patched_input);
 
         ESP_LOGI(TAG, "Tool %s result: %d bytes", call->name, (int)strlen(tool_output));
+        if (captured_image && captured_image_size > 0) {
+            char img_path[128] = {0};
+            if (tool_media_take_last_capture_path(img_path, sizeof(img_path)) == ESP_OK) {
+                strncpy(captured_image, img_path, captured_image_size - 1);
+                captured_image[captured_image_size - 1] = '\0';
+            }
+        }
         if (MIMI_AGENT_REQUEST_GAP_MS > 0) {
             vTaskDelay(pdMS_TO_TICKS(MIMI_AGENT_REQUEST_GAP_MS));
         }
@@ -243,6 +252,7 @@ static void agent_loop_task(void *arg)
         ESP_LOGI(TAG, "Processing message from %s:%s", msg.channel, msg.chat_id);
         char llm_error[256] = {0};
         esp_err_t last_err = ESP_OK;
+        char captured_image[128] = {0};
 
         if (strcmp(msg.channel, MIMI_CHAN_DISCORD) == 0) {
             discord_send_typing(msg.chat_id);
@@ -263,6 +273,11 @@ static void agent_loop_task(void *arg)
                 free(req_json);
                 if (oerr == ESP_OK && tool_output[0]) {
                     obs_text = strdup(tool_output);
+                    char img_path[128] = {0};
+                    if (tool_media_take_last_capture_path(img_path, sizeof(img_path)) == ESP_OK) {
+                        strncpy(captured_image, img_path, sizeof(captured_image) - 1);
+                        captured_image[sizeof(captured_image) - 1] = '\0';
+                    }
                 } else {
                     ESP_LOGW(TAG, "Auto observe failed: %s", esp_err_to_name(oerr));
                     mimi_msg_t out = {0};
@@ -368,7 +383,8 @@ static void agent_loop_task(void *arg)
             cJSON_AddItemToArray(messages, asst_msg);
 
             /* Execute tools and append results */
-            cJSON *tool_results = build_tool_results(&resp, &msg, tool_output, TOOL_OUTPUT_SIZE);
+            cJSON *tool_results = build_tool_results(&resp, &msg, tool_output, TOOL_OUTPUT_SIZE,
+                                                     captured_image, sizeof(captured_image));
             cJSON *result_msg = cJSON_CreateObject();
             cJSON_AddStringToObject(result_msg, "role", "user");
             cJSON_AddItemToObject(result_msg, "content", tool_results);
@@ -401,11 +417,23 @@ static void agent_loop_task(void *arg)
             out.content = final_text;  /* transfer ownership */
             ESP_LOGI(TAG, "Queue final response to %s:%s (%d bytes)",
                      out.channel, out.chat_id, (int)strlen(final_text));
+            bool sent_final = false;
             if (message_bus_push_outbound(&out) != ESP_OK) {
                 ESP_LOGW(TAG, "Outbound queue full, drop final response");
                 free(final_text);
             } else {
                 final_text = NULL;
+                sent_final = true;
+            }
+
+            if (sent_final &&
+                strcmp(msg.channel, MIMI_CHAN_DISCORD) == 0 &&
+                captured_image[0] != '\0') {
+                esp_err_t img_err = discord_send_file(msg.chat_id, captured_image, NULL);
+                if (img_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Discord image send failed for %s: %s",
+                             msg.chat_id, esp_err_to_name(img_err));
+                }
             }
         } else {
             /* Error or empty response */

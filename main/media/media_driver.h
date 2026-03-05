@@ -7,6 +7,9 @@
 typedef struct {
     esp_err_t (*camera_capture)(const char *path, char *out_path, size_t out_size);
     esp_err_t (*audio_record)(const char *path, int duration_ms, char *out_path, size_t out_size);
+    esp_err_t (*camera_set_framesize)(int framesize);
+    esp_err_t (*camera_set_quality)(int quality);
+    esp_err_t (*camera_get_status)(int *framesize, int *quality);
     bool (*camera_ready)(void);
     bool (*mic_ready)(void);
 } media_driver_t;
@@ -30,6 +33,10 @@ esp_err_t media_camera_capture(const char *path, char *out_path, size_t out_size
  * Audio record wrapper (calls driver).
  */
 esp_err_t media_audio_record(const char *path, int duration_ms, char *out_path, size_t out_size);
+
+esp_err_t media_camera_set_framesize(int framesize);
+esp_err_t media_camera_set_quality(int quality);
+esp_err_t media_camera_get_status(int *framesize, int *quality);
 
 bool media_camera_ready(void);
 bool media_mic_ready(void);

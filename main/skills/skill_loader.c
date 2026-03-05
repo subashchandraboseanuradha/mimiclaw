@@ -109,6 +109,27 @@ static const char *TAG = "skills";
     "→ vision_analyze {\"prompt\":\"描述这张图\"}\n" \
     "→ Reply with the description\n"
 
+#define BUILTIN_CAMERA_TUNING \
+    "# Camera Tuning\n" \
+    "\n" \
+    "Adjust camera resolution and JPEG quality using the device_cli tool.\n" \
+    "\n" \
+    "## When to use\n" \
+    "When the user asks to improve image clarity, reduce bandwidth, or change camera resolution/quality.\n" \
+    "\n" \
+    "## How to use\n" \
+    "1. Use device_cli with command=\"cam_get\" to read current settings.\n" \
+    "2. Use device_cli with command=\"cam_set\" and framesize/quality to update.\n" \
+    "3. Confirm with cam_get and report the new values.\n" \
+    "\n" \
+    "## Notes\n" \
+    "- quality range: 0-63 (lower is higher quality)\n" \
+    "- framesize: QQVGA QVGA VGA SVGA XGA SXGA UXGA HD FHD\n" \
+    "\n" \
+    "## Example\n" \
+    "device_cli {\"command\":\"cam_set\",\"framesize\":\"VGA\",\"quality\":15}\n" \
+    "device_cli {\"command\":\"cam_get\"}\n"
+
 /* Built-in skill registry */
 typedef struct {
     const char *filename;   /* e.g. "weather" */
@@ -120,6 +141,7 @@ static const builtin_skill_t s_builtins[] = {
     { "daily-briefing", BUILTIN_DAILY_BRIEFING },
     { "skill-creator",  BUILTIN_SKILL_CREATOR  },
     { "perception",     BUILTIN_PERCEPTION     },
+    { "camera-tuning",  BUILTIN_CAMERA_TUNING  },
 };
 
 #define NUM_BUILTINS (sizeof(s_builtins) / sizeof(s_builtins[0]))

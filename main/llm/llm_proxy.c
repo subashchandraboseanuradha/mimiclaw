@@ -5,10 +5,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "net/net_mutex.h"
+#include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "nvs.h"
 #include "cJSON.h"
@@ -24,6 +27,22 @@ static char s_api_key[LLM_API_KEY_MAX_LEN] = {0};
 static char s_model[LLM_MODEL_MAX_LEN] = MIMI_LLM_DEFAULT_MODEL;
 static char s_provider[16] = MIMI_LLM_PROVIDER_DEFAULT;
 static char s_last_error[256] = {0};
+
+static void log_http_client_error(esp_http_client_handle_t client,
+                                  const char *label,
+                                  esp_err_t err,
+                                  int status)
+{
+    int sock_errno = esp_http_client_get_errno(client);
+    int tls_code = 0;
+    int tls_flags = 0;
+    esp_err_t tls_err = esp_http_client_get_and_clear_last_tls_error(
+        client, &tls_code, &tls_flags);
+    ESP_LOGE(TAG,
+             "%s failed: err=%s status=%d errno=%d tls_err=%s tls_code=0x%x tls_flags=0x%x",
+             label, esp_err_to_name(err), status, sock_errno,
+             esp_err_to_name(tls_err), tls_code, tls_flags);
+}
 
 static void llm_log_payload(const char *label, const char *payload)
 {
@@ -94,6 +113,32 @@ static void llm_set_last_error(const char *fmt, ...)
     va_start(args, fmt);
     vsnprintf(s_last_error, sizeof(s_last_error), fmt, args);
     va_end(args);
+}
+
+static int parse_retry_after_ms(const char *body)
+{
+    if (!body) return -1;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return -1;
+    cJSON *retry = cJSON_GetObjectItem(root, "retry_after");
+    int ms = -1;
+    if (cJSON_IsNumber(retry)) {
+        double seconds = retry->valuedouble;
+        if (seconds < 0) seconds = 0;
+        ms = (int)(seconds * 1000.0);
+    }
+    cJSON_Delete(root);
+    return ms;
+}
+
+static void backoff_delay_ms(int *backoff_ms)
+{
+    int jitter = (int)(esp_random() % 200);
+    int delay = *backoff_ms + jitter;
+    vTaskDelay(pdMS_TO_TICKS(delay));
+    *backoff_ms = (*backoff_ms < MIMI_HTTP_RETRY_MAX_MS / 2)
+                      ? (*backoff_ms * 2)
+                      : MIMI_HTTP_RETRY_MAX_MS;
 }
 
 const char *llm_last_error(void)
@@ -275,6 +320,9 @@ static esp_err_t llm_http_direct(const char *post_data, resp_buf_t *rb, int *out
 
     esp_err_t err = esp_http_client_perform(client);
     *out_status = esp_http_client_get_status_code(client);
+    if (err != ESP_OK) {
+        log_http_client_error(client, "LLM HTTP", err, *out_status);
+    }
     esp_http_client_cleanup(client);
     net_mutex_unlock();
     return err;
@@ -284,8 +332,17 @@ static esp_err_t llm_http_direct(const char *post_data, resp_buf_t *rb, int *out
 
 static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *out_status)
 {
+    esp_err_t lock_err = net_mutex_lock(pdMS_TO_TICKS(MIMI_NET_MUTEX_TIMEOUT_MS));
+    if (lock_err != ESP_OK) {
+        ESP_LOGW(TAG, "LLM HTTP lock failed: %s", esp_err_to_name(lock_err));
+        return lock_err;
+    }
+
     proxy_conn_t *conn = proxy_conn_open(llm_api_host(), 443, 30000);
-    if (!conn) return ESP_ERR_HTTP_CONNECT;
+    if (!conn) {
+        net_mutex_unlock();
+        return ESP_ERR_HTTP_CONNECT;
+    }
 
     int body_len = strlen(post_data);
     char header[1024];
@@ -314,6 +371,7 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
     if (proxy_conn_write(conn, header, hlen) < 0 ||
         proxy_conn_write(conn, post_data, body_len) < 0) {
         proxy_conn_close(conn);
+        net_mutex_unlock();
         return ESP_ERR_HTTP_WRITE_DATA;
     }
 
@@ -325,6 +383,7 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
         if (resp_buf_append(rb, tmp, n) != ESP_OK) break;
     }
     proxy_conn_close(conn);
+    net_mutex_unlock();
 
     /* Parse status line */
     *out_status = 0;
@@ -602,23 +661,75 @@ esp_err_t llm_chat_tools(const char *system_prompt,
     llm_log_payload("LLM tools request", post_data);
 
     /* HTTP call */
-    resp_buf_t rb;
-    if (resp_buf_init(&rb, MIMI_LLM_STREAM_BUF_SIZE) != ESP_OK) {
-        free(post_data);
-        llm_set_last_error("Out of memory building response buffer");
-        return ESP_ERR_NO_MEM;
-    }
-
+    resp_buf_t rb = {0};
     int status = 0;
-    esp_err_t err = llm_http_call(post_data, &rb, &status);
+    esp_err_t err = ESP_OK;
+    int attempts = 0;
+    int backoff_ms = MIMI_HTTP_RETRY_BASE_MS;
+    int last_status = 0;
+    esp_err_t last_err = ESP_OK;
+    char last_preview[256] = {0};
+    bool success = false;
+
+    for (attempts = 0; attempts < MIMI_LLM_HTTP_MAX_RETRY; attempts++) {
+        if (resp_buf_init(&rb, MIMI_LLM_STREAM_BUF_SIZE) != ESP_OK) {
+            free(post_data);
+            llm_set_last_error("Out of memory building response buffer");
+            return ESP_ERR_NO_MEM;
+        }
+
+        status = 0;
+        err = llm_http_call(post_data, &rb, &status);
+        last_status = status;
+        last_err = err;
+
+        if (rb.data && rb.data[0]) {
+            size_t n = strlen(rb.data);
+            size_t c = (n < sizeof(last_preview) - 1) ? n : (sizeof(last_preview) - 1);
+            memcpy(last_preview, rb.data, c);
+            last_preview[c] = '\0';
+        } else {
+            last_preview[0] = '\0';
+        }
+
+        if (err == ESP_OK && status == 200) {
+            success = true;
+            break;
+        }
+
+        bool retry = false;
+        if (err != ESP_OK) {
+            retry = true;
+        } else if (status == 429 || status >= 500) {
+            retry = true;
+        }
+
+        if (!retry || attempts + 1 >= MIMI_LLM_HTTP_MAX_RETRY) {
+            resp_buf_free(&rb);
+            break;
+        }
+
+        if (status == 429) {
+            int retry_ms = parse_retry_after_ms(rb.data);
+            if (retry_ms < 0) retry_ms = backoff_ms;
+            vTaskDelay(pdMS_TO_TICKS(retry_ms));
+        } else {
+            backoff_delay_ms(&backoff_ms);
+        }
+
+        resp_buf_free(&rb);
+    }
     free(post_data);
 
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-        llm_log_payload("LLM tools partial response", rb.data);
-        llm_set_last_error("HTTP request failed: %s", esp_err_to_name(err));
-        resp_buf_free(&rb);
-        return err;
+    if (!success) {
+        if (last_err != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(last_err));
+            llm_set_last_error("HTTP request failed: %s", esp_err_to_name(last_err));
+            return last_err;
+        }
+        ESP_LOGE(TAG, "API error %d: %.200s", last_status, last_preview);
+        llm_set_last_error("API error %d: %.200s", last_status, last_preview);
+        return ESP_FAIL;
     }
 
     llm_log_payload("LLM tools raw response", rb.data);

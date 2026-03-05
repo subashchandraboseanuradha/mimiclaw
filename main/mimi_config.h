@@ -59,7 +59,7 @@
 #define MIMI_TG_CARD_BODY_SCALE      3
 
 /* Discord (HTTP polling) */
-#define MIMI_DISCORD_POLL_INTERVAL_MS   1500
+#define MIMI_DISCORD_POLL_INTERVAL_MS   3000
 #define MIMI_DISCORD_POLL_STACK         (12 * 1024)
 #define MIMI_DISCORD_POLL_PRIO          5
 #define MIMI_DISCORD_POLL_CORE          0
@@ -67,6 +67,7 @@
 #define MIMI_DISCORD_MAX_CHANNELS       5
 #define MIMI_DISCORD_SAVE_STEP          5
 #define MIMI_DISCORD_SAVE_INTERVAL_US   (5LL * 1000 * 1000)
+#define MIMI_DISCORD_TYPING_COOLDOWN_MS 8000
 
 /* Agent Loop */
 #define MIMI_AGENT_STACK             (24 * 1024)
@@ -79,6 +80,8 @@
 
 /* Timezone (POSIX TZ format) */
 #define MIMI_TIMEZONE                "PST8PDT,M3.2.0,M11.1.0"
+#define MIMI_TIME_SYNC_TIMEOUT_MS    15000
+#define MIMI_TIME_SYNC_MIN_VALID_TS  1672531200  /* 2023-01-01 */
 
 /* LLM */
 #define MIMI_LLM_DEFAULT_MODEL       "GLM-4-FlashX-250414"
@@ -87,6 +90,11 @@
 #define MIMI_VISION_MAX_TOKENS       512
 #define MIMI_AGENT_REQUEST_GAP_MS    200
 #define MIMI_NET_MUTEX_TIMEOUT_MS   60000
+#define MIMI_NET_MIN_INTERVAL_MS     300
+#define MIMI_HTTP_RETRY_BASE_MS      500
+#define MIMI_HTTP_RETRY_MAX_MS       8000
+#define MIMI_DISCORD_HTTP_MAX_RETRY  3
+#define MIMI_LLM_HTTP_MAX_RETRY      3
 #define MIMI_LLM_API_URL             "https://api.anthropic.com/v1/messages"
 #define MIMI_OPENAI_API_URL          "https://api.openai.com/v1/chat/completions"
 #define MIMI_ZHIPU_CODING_API_URL    "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"

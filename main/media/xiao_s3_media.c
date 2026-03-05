@@ -43,6 +43,32 @@ static bool s_mic_ready = false;
 static bool camera_ready(void) { return s_cam_ready; }
 static bool mic_ready(void) { return s_mic_ready; }
 
+static esp_err_t camera_set_framesize_impl(int framesize)
+{
+    if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s || !s->set_framesize) return ESP_FAIL;
+    return s->set_framesize(s, (framesize_t)framesize);
+}
+
+static esp_err_t camera_set_quality_impl(int quality)
+{
+    if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s || !s->set_quality) return ESP_FAIL;
+    return s->set_quality(s, quality);
+}
+
+static esp_err_t camera_get_status_impl(int *framesize, int *quality)
+{
+    if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) return ESP_FAIL;
+    if (framesize) *framesize = (int)s->status.framesize;
+    if (quality) *quality = (int)s->status.quality;
+    return ESP_OK;
+}
+
 static esp_err_t camera_capture_impl(const char *path, char *out_path, size_t out_size)
 {
     if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
@@ -211,11 +237,11 @@ esp_err_t media_xiao_s3_init(void)
         .pin_pwdn = -1,
         .pin_reset = -1,
         .xclk_freq_hz = 20000000,
-        .frame_size = FRAMESIZE_QVGA,
+        .frame_size = FRAMESIZE_VGA,
         .pixel_format = PIXFORMAT_JPEG,
         .grab_mode = CAMERA_GRAB_LATEST,
         .fb_location = CAMERA_FB_IN_PSRAM,
-        .jpeg_quality = 28,
+        .jpeg_quality = 15,
         .fb_count = 1,
     };
 
@@ -241,6 +267,9 @@ esp_err_t media_xiao_s3_init(void)
     media_driver_t driver = {
         .camera_capture = camera_capture_impl,
         .audio_record = audio_record_impl,
+        .camera_set_framesize = camera_set_framesize_impl,
+        .camera_set_quality = camera_set_quality_impl,
+        .camera_get_status = camera_get_status_impl,
         .camera_ready = camera_ready,
         .mic_ready = mic_ready,
     };
