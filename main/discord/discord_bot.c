@@ -1,6 +1,7 @@
 #include "discord_bot.h"
 #include "mimi_config.h"
 #include "bus/message_bus.h"
+#include "wifi/wifi_manager.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -169,15 +170,24 @@ static char *discord_http_request(const char *method, const char *path,
 {
     if (out_status) *out_status = 0;
     if (!s_bot_token[0]) return NULL;
+    if (!wifi_manager_is_connected()) {
+        return NULL;
+    }
 
+    const bool is_poll_get = (method && strcmp(method, "GET") == 0 && post_data == NULL);
+    const int timeout_ms = is_poll_get ? 12000 : 30000;
+    const int max_retry = is_poll_get ? 1 : MIMI_DISCORD_HTTP_MAX_RETRY;
     int attempt = 0;
     int backoff_ms = MIMI_HTTP_RETRY_BASE_MS;
 
-    while (attempt < MIMI_DISCORD_HTTP_MAX_RETRY) {
+    while (attempt < max_retry) {
+        if (!wifi_manager_is_connected()) {
+            return NULL;
+        }
         esp_err_t lock_err = net_mutex_lock(pdMS_TO_TICKS(MIMI_NET_MUTEX_TIMEOUT_MS));
         if (lock_err != ESP_OK) {
             ESP_LOGW(TAG, "HTTP lock failed: %s", esp_err_to_name(lock_err));
-            if (!retryable_http_err(lock_err) || attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+            if (!retryable_http_err(lock_err) || attempt + 1 >= max_retry) {
                 return NULL;
             }
             backoff_delay_ms(&backoff_ms);
@@ -201,7 +211,7 @@ static char *discord_http_request(const char *method, const char *path,
             .url = url,
             .event_handler = http_event_handler,
             .user_data = &resp,
-            .timeout_ms = 30000,
+            .timeout_ms = timeout_ms,
             .buffer_size = 2048,
             .buffer_size_tx = 2048,
             .crt_bundle_attach = esp_crt_bundle_attach,
@@ -240,7 +250,7 @@ static char *discord_http_request(const char *method, const char *path,
 
         if (err != ESP_OK) {
             free(resp.buf);
-            if (!retryable_http_err(err) || attempt + 1 >= MIMI_DISCORD_HTTP_MAX_RETRY) {
+            if (!retryable_http_err(err) || attempt + 1 >= max_retry) {
                 return NULL;
             }
             backoff_delay_ms(&backoff_ms);
@@ -561,6 +571,10 @@ esp_err_t discord_send_file(const char *channel_id, const char *path, const char
         ESP_LOGW(TAG, "Cannot send file: no discord bot token");
         return ESP_ERR_INVALID_STATE;
     }
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "Cannot send file: WiFi disconnected");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!channel_id || !channel_id[0] || !path || !path[0]) return ESP_ERR_INVALID_ARG;
 
     struct stat st;
@@ -618,6 +632,9 @@ esp_err_t discord_send_file(const char *channel_id, const char *path, const char
     int backoff_ms = MIMI_HTTP_RETRY_BASE_MS;
 
     while (attempt < MIMI_DISCORD_HTTP_MAX_RETRY) {
+        if (!wifi_manager_is_connected()) {
+            return ESP_ERR_INVALID_STATE;
+        }
         esp_err_t lock_err = net_mutex_lock(pdMS_TO_TICKS(MIMI_NET_MUTEX_TIMEOUT_MS));
         if (lock_err != ESP_OK) {
             ESP_LOGW(TAG, "HTTP lock failed: %s", esp_err_to_name(lock_err));

@@ -187,7 +187,9 @@ static char *patch_tool_input_with_context(const llm_tool_call_t *call, const mi
 /* Build the user message with tool_result blocks */
 static cJSON *build_tool_results(const llm_response_t *resp, const mimi_msg_t *msg,
                                  char *tool_output, size_t tool_output_size,
-                                 char *captured_image, size_t captured_image_size)
+                                 char *captured_image, size_t captured_image_size,
+                                 const char *cached_observation,
+                                 bool *cached_observation_consumed)
 {
     cJSON *content = cJSON_CreateArray();
 
@@ -199,22 +201,36 @@ static cJSON *build_tool_results(const llm_response_t *resp, const mimi_msg_t *m
             tool_input = patched_input;
         }
 
-        /* Execute tool */
-        tool_output[0] = '\0';
-        tool_registry_execute(call->name, tool_input, tool_output, tool_output_size);
-        free(patched_input);
+        bool use_cached_observation =
+            cached_observation &&
+            strcmp(call->name, "observe_scene") == 0 &&
+            (!cached_observation_consumed || !(*cached_observation_consumed));
 
-        ESP_LOGI(TAG, "Tool %s result: %d bytes", call->name, (int)strlen(tool_output));
-        if (captured_image && captured_image_size > 0) {
-            char img_path[128] = {0};
-            if (tool_media_take_last_capture_path(img_path, sizeof(img_path)) == ESP_OK) {
-                strncpy(captured_image, img_path, captured_image_size - 1);
-                captured_image[captured_image_size - 1] = '\0';
+        if (use_cached_observation) {
+            strncpy(tool_output, cached_observation, tool_output_size - 1);
+            tool_output[tool_output_size - 1] = '\0';
+            if (cached_observation_consumed) {
+                *cached_observation_consumed = true;
+            }
+            ESP_LOGI(TAG, "Tool %s result reused from cached observation: %d bytes",
+                     call->name, (int)strlen(tool_output));
+        } else {
+            /* Execute tool */
+            tool_output[0] = '\0';
+            tool_registry_execute(call->name, tool_input, tool_output, tool_output_size);
+            ESP_LOGI(TAG, "Tool %s result: %d bytes", call->name, (int)strlen(tool_output));
+            if (captured_image && captured_image_size > 0) {
+                char img_path[128] = {0};
+                if (tool_media_take_last_capture_path(img_path, sizeof(img_path)) == ESP_OK) {
+                    strncpy(captured_image, img_path, captured_image_size - 1);
+                    captured_image[captured_image_size - 1] = '\0';
+                }
+            }
+            if (MIMI_AGENT_REQUEST_GAP_MS > 0) {
+                vTaskDelay(pdMS_TO_TICKS(MIMI_AGENT_REQUEST_GAP_MS));
             }
         }
-        if (MIMI_AGENT_REQUEST_GAP_MS > 0) {
-            vTaskDelay(pdMS_TO_TICKS(MIMI_AGENT_REQUEST_GAP_MS));
-        }
+        free(patched_input);
 
         /* Build tool_result block */
         cJSON *result_block = cJSON_CreateObject();
@@ -326,6 +342,8 @@ static void agent_loop_task(void *arg)
         char *final_text = NULL;
         int iteration = 0;
         bool sent_working_status = false;
+        bool sent_discord_tool_status = false;
+        bool cached_observation_consumed = false;
 
         while (iteration < MIMI_AGENT_MAX_TOOL_ITER) {
             /* Send "working" indicator before each API call */
@@ -374,6 +392,17 @@ static void agent_loop_task(void *arg)
                 break;
             }
 
+            if (!sent_discord_tool_status &&
+                strcmp(msg.channel, MIMI_CHAN_DISCORD) == 0) {
+                esp_err_t status_err = discord_send_message(msg.chat_id, "processing...");
+                if (status_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Discord tool status send failed for %s: %s",
+                             msg.chat_id, esp_err_to_name(status_err));
+                } else {
+                    sent_discord_tool_status = true;
+                }
+            }
+
             ESP_LOGI(TAG, "Tool use iteration %d: %d calls", iteration + 1, resp.call_count);
 
             /* Append assistant message with content array */
@@ -384,7 +413,8 @@ static void agent_loop_task(void *arg)
 
             /* Execute tools and append results */
             cJSON *tool_results = build_tool_results(&resp, &msg, tool_output, TOOL_OUTPUT_SIZE,
-                                                     captured_image, sizeof(captured_image));
+                                                     captured_image, sizeof(captured_image),
+                                                     obs_text, &cached_observation_consumed);
             cJSON *result_msg = cJSON_CreateObject();
             cJSON_AddStringToObject(result_msg, "role", "user");
             cJSON_AddItemToObject(result_msg, "content", tool_results);

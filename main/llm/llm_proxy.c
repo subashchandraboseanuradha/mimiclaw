@@ -1,6 +1,7 @@
 #include "llm_proxy.h"
 #include "mimi_config.h"
 #include "proxy/http_proxy.h"
+#include "wifi/wifi_manager.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -409,6 +410,9 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
 
 static esp_err_t llm_http_call(const char *post_data, resp_buf_t *rb, int *out_status)
 {
+    if (!wifi_manager_is_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (http_proxy_is_enabled()) {
         return llm_http_via_proxy(post_data, rb, out_status);
     } else {

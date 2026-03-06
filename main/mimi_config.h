@@ -73,7 +73,7 @@
 #define MIMI_AGENT_STACK             (24 * 1024)
 #define MIMI_AGENT_PRIO              6
 #define MIMI_AGENT_CORE              1
-#define MIMI_AGENT_MAX_HISTORY       20
+#define MIMI_AGENT_MAX_HISTORY       16
 #define MIMI_AGENT_MAX_TOOL_ITER     10
 #define MIMI_MAX_TOOL_CALLS          4
 #define MIMI_AGENT_SEND_WORKING_STATUS 1
@@ -86,11 +86,11 @@
 /* LLM */
 #define MIMI_LLM_DEFAULT_MODEL       "GLM-4-FlashX-250414"
 #define MIMI_LLM_PROVIDER_DEFAULT    "zhipu"
-#define MIMI_LLM_MAX_TOKENS          1024
+#define MIMI_LLM_MAX_TOKENS          768
 #define MIMI_VISION_MAX_TOKENS       512
-#define MIMI_AGENT_REQUEST_GAP_MS    200
+#define MIMI_AGENT_REQUEST_GAP_MS    80
 #define MIMI_NET_MUTEX_TIMEOUT_MS   60000
-#define MIMI_NET_MIN_INTERVAL_MS     300
+#define MIMI_NET_MIN_INTERVAL_MS     120
 #define MIMI_HTTP_RETRY_BASE_MS      500
 #define MIMI_HTTP_RETRY_MAX_MS       8000
 #define MIMI_DISCORD_HTTP_MAX_RETRY  3
@@ -111,7 +111,7 @@
 #define MIMI_LLM_API_VERSION         "2023-06-01"
 #define MIMI_LLM_STREAM_BUF_SIZE     (32 * 1024)
 #define MIMI_LLM_LOG_VERBOSE_PAYLOAD 0
-#define MIMI_LLM_LOG_PREVIEW_BYTES   160
+#define MIMI_LLM_LOG_PREVIEW_BYTES   96
 
 /* Message Bus */
 #define MIMI_BUS_QUEUE_LEN           16

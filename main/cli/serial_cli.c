@@ -554,11 +554,24 @@ static bool build_skill_path(const char *name, char *out, size_t out_size)
     if (strstr(name, "..") != NULL) return false;
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return false;
 
-    if (has_md_suffix(name)) {
-        snprintf(out, out_size, MIMI_SKILLS_PREFIX "%s", name);
-    } else {
-        snprintf(out, out_size, MIMI_SKILLS_PREFIX "%s.md", name);
+    const size_t prefix_len = sizeof(MIMI_SKILLS_PREFIX) - 1;
+    const size_t name_len = strlen(name);
+    const bool has_suffix = has_md_suffix(name);
+    const size_t ext_len = has_suffix ? 0 : 3; /* ".md" */
+    const size_t needed = prefix_len + name_len + ext_len + 1; /* +NUL */
+
+    if (!out || out_size == 0 || needed > out_size) {
+        return false;
     }
+
+    memcpy(out, MIMI_SKILLS_PREFIX, prefix_len);
+    memcpy(out + prefix_len, name, name_len);
+    size_t off = prefix_len + name_len;
+    if (!has_suffix) {
+        memcpy(out + off, ".md", 3);
+        off += 3;
+    }
+    out[off] = '\0';
     return true;
 }
 

@@ -4,8 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <dirent.h>
 #include <time.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "esp_log.h"
@@ -21,9 +23,42 @@ static void ensure_session_dir(void)
     }
 }
 
+/* FNV-1a 32-bit for compact, deterministic session file names on SPIFFS. */
+static uint32_t fnv1a32(const char *s)
+{
+    uint32_t h = 2166136261u;
+    if (!s) return h;
+    while (*s) {
+        h ^= (uint8_t)(*s++);
+        h *= 16777619u;
+    }
+    return h;
+}
+
 static void session_path(const char *chat_id, char *buf, size_t size)
 {
-    snprintf(buf, size, "%s/tg_%s.jsonl", MIMI_SPIFFS_SESSION_DIR, chat_id);
+    uint32_t h = fnv1a32(chat_id);
+    snprintf(buf, size, "%s/s_%08" PRIx32 ".jsonl", MIMI_SPIFFS_SESSION_DIR, h);
+}
+
+/* Backward-compatible legacy path used in older builds. */
+static bool session_path_legacy(const char *chat_id, char *buf, size_t size)
+{
+    const char *id = chat_id ? chat_id : "";
+    const size_t prefix_len = sizeof(MIMI_SPIFFS_SESSION_DIR "/tg_") - 1;
+    const size_t suffix_len = sizeof(".jsonl") - 1;
+    const size_t id_len = strlen(id);
+    const size_t needed = prefix_len + id_len + suffix_len + 1;
+
+    if (!buf || size == 0 || needed > size) {
+        return false;
+    }
+
+    memcpy(buf, MIMI_SPIFFS_SESSION_DIR "/tg_", prefix_len);
+    memcpy(buf + prefix_len, id, id_len);
+    memcpy(buf + prefix_len + id_len, ".jsonl", suffix_len);
+    buf[prefix_len + id_len + suffix_len] = '\0';
+    return true;
 }
 
 esp_err_t session_mgr_init(void)
@@ -63,14 +98,29 @@ esp_err_t session_append(const char *chat_id, const char *role, const char *cont
 
 esp_err_t session_get_history_json(const char *chat_id, char *buf, size_t size, int max_msgs)
 {
+    if (max_msgs <= 0) {
+        snprintf(buf, size, "[]");
+        return ESP_OK;
+    }
+    if (max_msgs > MIMI_SESSION_MAX_MSGS) {
+        max_msgs = MIMI_SESSION_MAX_MSGS;
+    }
+
     char path[64];
     session_path(chat_id, path, sizeof(path));
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        /* No history yet */
-        snprintf(buf, size, "[]");
-        return ESP_OK;
+        /* Backward compatibility for pre-hash file naming. */
+        char legacy[64];
+        if (session_path_legacy(chat_id, legacy, sizeof(legacy))) {
+            f = fopen(legacy, "r");
+        }
+        if (!f) {
+            /* No history yet */
+            snprintf(buf, size, "[]");
+            return ESP_OK;
+        }
     }
 
     /* Read all lines into a ring buffer of cJSON objects */
@@ -140,8 +190,16 @@ esp_err_t session_clear(const char *chat_id)
 {
     char path[64];
     session_path(chat_id, path, sizeof(path));
+    bool removed = (remove(path) == 0);
 
-    if (remove(path) == 0) {
+    /* Also clear legacy-named file if present. */
+    char legacy[64];
+    if (session_path_legacy(chat_id, legacy, sizeof(legacy)) &&
+        remove(legacy) == 0) {
+        removed = true;
+    }
+
+    if (removed) {
         ESP_LOGI(TAG, "Session %s cleared", chat_id);
         return ESP_OK;
     }
