@@ -173,6 +173,28 @@ mimi> clear_proxy                    # 清除代理
 
 > **提示**：确保 ESP32-S3 和代理机器在同一局域网。Clash Verge 在「设置 → 允许局域网」中开启。
 
+### 飞书 Bot（Relay 模式）
+
+如果你在国内网络环境中使用飞书，推荐用 **Relay 模式** 免公网回调：
+
+1. 飞书官方 SDK 通过 WebSocket 长连接接收事件。
+2. Relay 转发到 MimiClaw 的内置 WebSocket 网关。
+3. MimiClaw 回复后由 Relay 发回飞书。
+
+快速启动：
+
+```bash
+pip install lark-oapi websocket-client
+
+export APP_ID="cli_xxx"
+export APP_SECRET="xxxxxx"
+export MIMI_WS_URL="ws://<device_ip>:18789/ws"
+
+python3 scripts/feishu_relay.py
+```
+
+更多细节见 `docs/feishubot.md`。
+
 ### Web UI（HTTP + WebSocket）
 
 MimiClaw 会在和 WebSocket 同一端口提供内置网页：
