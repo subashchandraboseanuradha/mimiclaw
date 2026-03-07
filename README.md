@@ -1,13 +1,14 @@
 # Project Name
 
 MimiClaw (`dev/seeed-xiao-s3`) - lzx 提交范围的部署文档。
+默认最小可运行路径：`Zhipu API + Discord`。
 
 适用提交范围：`8354932` ~ `46dff47`
 
 本文只讲这批改进相关内容：
 - Web UI + WebSocket + bench
-- Zhipu/OpenAI/Anthropic 切换
-- WeCom/Discord 运行时配置
+- 默认 Zhipu + Discord，其他渠道可选
+- OpenAI/Anthropic/WeCom/Telegram 可选配置
 - XIAO ESP32S3 Sense 媒体工具（拍照/录音/识别）
 
 # Quick Start
@@ -49,7 +50,7 @@ macOS:
 . "$HOME/.espressif/esp-idf-v5.5.2/export.sh"
 ```
 
-## 3) 填配置（API key / token）
+## 3) 填配置（默认：Zhipu + Discord）
 
 ```bash
 cp main/mimi_secrets.h.example main/mimi_secrets.h
@@ -65,19 +66,20 @@ cp main/mimi_secrets.h.example main/mimi_secrets.h
 #define MIMI_SECRET_MODEL_PROVIDER  "zhipu"     // zhipu | openai | anthropic
 #define MIMI_SECRET_MODEL           "GLM-4-FlashX-250414"
 
+#define MIMI_SECRET_DISCORD_TOKEN   "YOUR_DISCORD_BOT_TOKEN"
 #define MIMI_SECRET_TG_TOKEN        ""          // 可选
-#define MIMI_SECRET_DISCORD_TOKEN   ""          // 可选
 #define MIMI_SECRET_WECOM_WEBHOOK   ""          // 可选
 ```
 
 API key 获取：
 - Zhipu: https://open.bigmodel.cn/
-- OpenAI: https://platform.openai.com/
-- Anthropic: https://console.anthropic.com/
+- OpenAI（可选）: https://platform.openai.com/
+- Anthropic（可选）: https://console.anthropic.com/
 
 避坑：
 - `MODEL_PROVIDER` 和 `MODEL` 要匹配；不匹配会请求失败。
-- 只用 CLI 测试可不填 Telegram/Discord。
+- Discord 通道未配置时，机器人不会在目标频道回消息。
+- 只用 CLI 测试可不填 Discord/Telegram。
 - 网络受限时，先在 CLI 里设置代理：`set_proxy HOST PORT [http|socks5]`。
 
 ## 4) 编译烧录
@@ -115,6 +117,9 @@ mimi> set_wifi YOUR_WIFI YOUR_WIFI_PASSWORD
 mimi> set_api_key YOUR_API_KEY
 mimi> set_model_provider zhipu
 mimi> set_model GLM-4-FlashX-250414
+mimi> set_discord_token YOUR_DISCORD_BOT_TOKEN
+mimi> discord_channel_add 123456789012345678
+mimi> discord_channel_list
 mimi> config_show
 mimi> restart
 ```
@@ -146,19 +151,55 @@ mimi> tool_exec device_cli '{"command":"cam_get"}'
 mimi> tool_exec device_cli '{"command":"cam_set","framesize":"VGA","quality":15}'
 ```
 
-## D) 验证渠道配置（可选）
+## D) 其他渠道（可选，自行开启）
 
 ```text
+mimi> set_tg_token 123456:ABCDEF...
 mimi> set_wecom_webhook https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY
-mimi> set_discord_token YOUR_DISCORD_BOT_TOKEN
-mimi> discord_channel_add 123456789012345678
-mimi> discord_channel_list
 ```
+
+## E) 价值场景（从“能跑”到“有用”）
+
+1) 远程图像/音频采集 + 云端模型分析  
+Discord 发一句自然语言命令，设备本地采集，再交给云端模型理解：
+
+```text
+mimi> tool_exec observe_scene '{"prompt":"门口现在有什么异常？"}'
+mimi> tool_exec listen_and_transcribe '{"duration_ms":5000}'
+```
+
+2) 智能家居中控（下一步扩展）  
+当前可先做“感知+理解”，再增加一个灯光/窗帘控制工具（HTTP/MQTT）就能闭环：
+
+```text
+# 当前阶段：先让设备判断环境
+mimi> tool_exec observe_scene '{"prompt":"房间是否太暗？给出开灯建议。"}'
+```
+
+3) 宠物第一视角问答  
+设备挂在宠物项圈或背包，远程问“它现在在看什么/听到什么”：
+
+```text
+mimi> tool_exec observe_scene '{"prompt":"这只宠物现在在做什么？"}'
+mimi> tool_exec listen_and_transcribe '{"duration_ms":3000}'
+```
+
+4) 宠物运动分析（组合 IMU 的方向）  
+结合三轴传感器数据可继续扩展：
+- 热量估算（按活动强度和时长）
+- 步态检测（异常步态预警）
+- 行为识别（奔跑/静止/趴卧）
+
+5) 远程巡检节点  
+把它当成低功耗观察点，定时采集并推送摘要到 Discord：
+- 是否有人/有声响
+- 环境状态是否异常
+- 需要时再人工介入
 
 # How It Works
 
 1. 启动后读取 `mimi_secrets.h`，再加载 NVS 里的运行时覆盖项。
-2. Telegram / Discord / CLI / WebSocket 消息进入同一个 agent loop。
+2. Discord / CLI / WebSocket（以及可选 Telegram）消息进入同一个 agent loop。
 3. `set_model_provider` 决定走 `zhipu` / `openai` / `anthropic`。
 4. `observe_scene` 和 `listen_and_transcribe` 走媒体驱动 + 多模态 API。
 5. UI 与 WS 在 `18789`；bench 可从 CLI 或 WS 触发。
