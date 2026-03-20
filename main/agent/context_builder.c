@@ -54,7 +54,7 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
         "- cron_remove: Remove a scheduled cron job by ID.\n"
         "- observe_scene: Capture and analyze a photo in one step (or analyze an existing image with capture=false).\n"
         "- listen_and_transcribe: Record audio and transcribe it in one step.\n"
-        "- device_cli: Execute limited device CLI commands for camera tuning (cam_get, cam_set).\n\n"
+        "- device_cli: Read current camera settings (cam_get only; do not change them).\n\n"
         "You DO have a camera and microphone. When the user asks what you can see or to describe the scene, "
         "use observe_scene. When the user asks to transcribe speech or \"listen\", use listen_and_transcribe. "
         "If the user did not explicitly request capture/record, "

@@ -208,16 +208,14 @@ esp_err_t tool_registry_init(void)
     };
     register_tool(&lt);
 
-    /* Register device_cli (camera tuning) */
+    /* Register device_cli (camera status only for AI) */
     mimi_tool_t dc = {
         .name = "device_cli",
-        .description = "Execute a limited set of device CLI commands for camera tuning (cam_get, cam_set).",
+        .description = "Read current camera settings for status reporting (cam_get only).",
         .input_schema_json =
             "{\"type\":\"object\","
             "\"properties\":{"
-            "\"command\":{\"type\":\"string\",\"description\":\"cam_get or cam_set\"},"
-            "\"framesize\":{\"type\":\"string\",\"description\":\"QQVGA|QVGA|VGA|SVGA|XGA|SXGA|UXGA|HD|FHD (cam_set)\"},"
-            "\"quality\":{\"type\":\"integer\",\"description\":\"JPEG quality 0-63 (lower=better), cam_set\"}"
+            "\"command\":{\"type\":\"string\",\"description\":\"cam_get\"}"
             "},"
             "\"required\":[\"command\"]}",
         .execute = tool_device_cli_execute,
