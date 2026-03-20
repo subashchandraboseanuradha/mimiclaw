@@ -186,8 +186,9 @@ ws://<device_ip>:18789/ws
 mimi> tool_exec observe_scene '{"prompt":"Describe the image."}'
 mimi> tool_exec listen_and_transcribe '{"duration_ms":3000}'
 mimi> tool_exec device_cli '{"command":"cam_get"}'
-mimi> tool_exec device_cli '{"command":"cam_set","framesize":"VGA","quality":15}'
 ```
+
+Camera settings are now fixed in firmware to preserve image quality. `cam_set` is intentionally disabled.
 
 ## D) Other channels (optional)
 

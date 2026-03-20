@@ -34,11 +34,7 @@ esp_err_t tool_device_cli_execute(const char *input_json, char *output, size_t o
     int quality = root ? json_get_int(root, "quality", -1) : -1;
 
     if (!command || !command[0]) {
-        if (framesize_str || quality >= 0) {
-            command = "cam_set";
-        } else {
-            command = "cam_get";
-        }
+        command = "cam_get";
     }
 
     if (strcmp(command, "cam_get") == 0) {
@@ -63,48 +59,9 @@ esp_err_t tool_device_cli_execute(const char *input_json, char *output, size_t o
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!framesize_str && quality < 0) {
-        write_error(output, output_size, "missing framesize or quality");
-        if (root) cJSON_Delete(root);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (framesize_str) {
-        int fs = 0;
-        if (!media_framesize_from_name(framesize_str, &fs)) {
-            write_error(output, output_size, "invalid framesize");
-            if (root) cJSON_Delete(root);
-            return ESP_ERR_INVALID_ARG;
-        }
-        esp_err_t err = media_camera_set_framesize(fs);
-        if (err != ESP_OK) {
-            write_error(output, output_size, "set framesize failed");
-            if (root) cJSON_Delete(root);
-            return err;
-        }
-    }
-
-    if (quality >= 0) {
-        if (quality > 63) {
-            write_error(output, output_size, "quality out of range");
-            if (root) cJSON_Delete(root);
-            return ESP_ERR_INVALID_ARG;
-        }
-        esp_err_t err = media_camera_set_quality(quality);
-        if (err != ESP_OK) {
-            write_error(output, output_size, "set quality failed");
-            if (root) cJSON_Delete(root);
-            return err;
-        }
-    }
-
-    int framesize = 0;
-    int q = 0;
-    media_camera_get_status(&framesize, &q);
-    snprintf(output, output_size,
-             "{\"ok\":true,\"framesize\":\"%s\",\"quality\":%d}",
-             media_framesize_name(framesize), q);
-
+    (void)framesize_str;
+    (void)quality;
+    write_error(output, output_size, "cam_set disabled; camera settings are fixed to preserve image quality");
     if (root) cJSON_Delete(root);
-    return ESP_OK;
+    return ESP_ERR_NOT_SUPPORTED;
 }

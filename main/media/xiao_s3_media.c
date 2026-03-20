@@ -45,18 +45,14 @@ static bool mic_ready(void) { return s_mic_ready; }
 
 static esp_err_t camera_set_framesize_impl(int framesize)
 {
-    if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
-    sensor_t *s = esp_camera_sensor_get();
-    if (!s || !s->set_framesize) return ESP_FAIL;
-    return s->set_framesize(s, (framesize_t)framesize);
+    (void)framesize;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 static esp_err_t camera_set_quality_impl(int quality)
 {
-    if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
-    sensor_t *s = esp_camera_sensor_get();
-    if (!s || !s->set_quality) return ESP_FAIL;
-    return s->set_quality(s, quality);
+    (void)quality;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 static esp_err_t camera_get_status_impl(int *framesize, int *quality)

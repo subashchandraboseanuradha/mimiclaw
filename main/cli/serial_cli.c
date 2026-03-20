@@ -37,11 +37,6 @@
 static const char *TAG = "cli";
 
 /* --- cam_get / cam_set commands --- */
-static struct {
-    struct arg_str *framesize;
-    struct arg_int *quality;
-    struct arg_end *end;
-} cam_set_args;
 
 static int cmd_cam_get(int argc, char **argv)
 {
@@ -61,47 +56,11 @@ static int cmd_cam_get(int argc, char **argv)
 
 static int cmd_cam_set(int argc, char **argv)
 {
-    int nerrors = arg_parse(argc, argv, (void **)&cam_set_args);
-    if (nerrors != 0) {
-        arg_print_errors(stderr, cam_set_args.end, argv[0]);
-        return 1;
-    }
-
-    bool changed = false;
-    if (cam_set_args.framesize->count > 0) {
-        int fs = 0;
-        if (!media_framesize_from_name(cam_set_args.framesize->sval[0], &fs)) {
-            printf("Invalid framesize. Use one of: QQVGA QVGA VGA SVGA XGA SXGA UXGA HD FHD\n");
-            return 1;
-        }
-        esp_err_t err = media_camera_set_framesize(fs);
-        if (err != ESP_OK) {
-            printf("Set framesize failed: %s\n", esp_err_to_name(err));
-            return 1;
-        }
-        changed = true;
-    }
-
-    if (cam_set_args.quality->count > 0) {
-        int q = cam_set_args.quality->ival[0];
-        if (q < 0 || q > 63) {
-            printf("Invalid quality. Use 0-63 (lower is higher quality).\n");
-            return 1;
-        }
-        esp_err_t err = media_camera_set_quality(q);
-        if (err != ESP_OK) {
-            printf("Set quality failed: %s\n", esp_err_to_name(err));
-            return 1;
-        }
-        changed = true;
-    }
-
-    if (!changed) {
-        printf("Usage: cam_set [--framesize <QQVGA|QVGA|VGA|SVGA|XGA|SXGA|UXGA|HD|FHD>] [--quality <0-63>]\n");
-        return 1;
-    }
-
-    return cmd_cam_get(0, NULL);
+    (void)argc;
+    (void)argv;
+    printf("cam_set is disabled to preserve image capture quality.\n");
+    printf("Camera settings are fixed at the firmware default.\n");
+    return 1;
 }
 
 /* --- wifi_set command --- */
@@ -972,15 +931,10 @@ esp_err_t serial_cli_init(void)
     };
     esp_console_cmd_register(&cam_get_cmd);
 
-    /* cam_set */
-    cam_set_args.framesize = arg_str0(NULL, "framesize", "<size>", "QQVGA|QVGA|VGA|SVGA|XGA|SXGA|UXGA|HD|FHD");
-    cam_set_args.quality = arg_int0(NULL, "quality", "<0-63>", "JPEG quality (lower=better)");
-    cam_set_args.end = arg_end(2);
     esp_console_cmd_t cam_set_cmd = {
         .command = "cam_set",
-        .help = "Set camera params (e.g. cam_set --framesize VGA --quality 15)",
+        .help = "Disabled; camera settings are fixed to preserve image quality",
         .func = &cmd_cam_set,
-        .argtable = &cam_set_args,
     };
     esp_console_cmd_register(&cam_set_cmd);
 

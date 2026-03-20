@@ -175,8 +175,9 @@ ws://<device_ip>:18789/ws
 mimi> tool_exec observe_scene '{"prompt":"Describe the image."}'
 mimi> tool_exec listen_and_transcribe '{"duration_ms":3000}'
 mimi> tool_exec device_cli '{"command":"cam_get"}'
-mimi> tool_exec device_cli '{"command":"cam_set","framesize":"VGA","quality":15}'
 ```
+
+画質を保つため、カメラ設定はファームウェアのデフォルト値に固定されています。`cam_set` は意図的に無効化されています。
 
 ## D) その他のチャネル（任意）
 
