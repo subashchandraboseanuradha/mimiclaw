@@ -242,57 +242,124 @@ static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
     return ESP_OK;
 }
 
+/* ── Tavily POST search ───────────────────────────────────────── */
+
+static esp_err_t search_tavily(const char *query, search_buf_t *sb)
+{
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "query", query);
+    cJSON_AddNumberToObject(body, "max_results", SEARCH_RESULT_COUNT);
+    cJSON_AddBoolToObject(body, "include_answer", false);
+    char *body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    if (!body_str) return ESP_ERR_NO_MEM;
+
+    esp_err_t lock_err = net_mutex_lock(pdMS_TO_TICKS(MIMI_NET_MUTEX_TIMEOUT_MS));
+    if (lock_err != ESP_OK) { free(body_str); return lock_err; }
+
+    esp_http_client_config_t config = {
+        .url = "https://api.tavily.com/search",
+        .event_handler = http_event_handler,
+        .user_data = sb,
+        .timeout_ms = 15000,
+        .buffer_size = 4096,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .method = HTTP_METHOD_POST,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) { free(body_str); net_mutex_unlock(); return ESP_FAIL; }
+
+    char auth[160];
+    snprintf(auth, sizeof(auth), "Bearer %s", s_search_key);
+    esp_http_client_set_header(client, "Authorization", auth);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_http_client_set_post_field(client, body_str, strlen(body_str));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    free(body_str);
+    net_mutex_unlock();
+
+    if (err != ESP_OK) return err;
+    if (status != 200) { ESP_LOGE(TAG, "Tavily returned %d: %.200s", status, sb->data); return ESP_FAIL; }
+    return ESP_OK;
+}
+
+static void format_tavily_results(cJSON *root, char *output, size_t output_size)
+{
+    cJSON *results = cJSON_GetObjectItem(root, "results");
+    if (!results || !cJSON_IsArray(results)) {
+        snprintf(output, output_size, "No results found.");
+        return;
+    }
+    size_t off = 0;
+    int idx = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, results) {
+        if (idx >= SEARCH_RESULT_COUNT) break;
+        cJSON *title   = cJSON_GetObjectItem(item, "title");
+        cJSON *url     = cJSON_GetObjectItem(item, "url");
+        cJSON *content = cJSON_GetObjectItem(item, "content");
+        off += snprintf(output + off, output_size - off, "%d. %s\n   %s\n   %s\n\n",
+            idx + 1,
+            (title   && cJSON_IsString(title))   ? title->valuestring   : "(no title)",
+            (url     && cJSON_IsString(url))     ? url->valuestring     : "",
+            (content && cJSON_IsString(content)) ? content->valuestring : "");
+        if (off >= output_size - 1) break;
+        idx++;
+    }
+}
+
 /* ── Execute ──────────────────────────────────────────────────── */
 
 esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t output_size)
 {
     if (s_search_key[0] == '\0') {
-        snprintf(output, output_size, "Error: No search API key configured. Set MIMI_SECRET_SEARCH_KEY in mimi_secrets.h");
+        snprintf(output, output_size, "Error: No search API key configured.");
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Parse input to get query */
     cJSON *input = cJSON_Parse(input_json);
     if (!input) {
         snprintf(output, output_size, "Error: Invalid input JSON");
         return ESP_ERR_INVALID_ARG;
     }
-
-    cJSON *query = cJSON_GetObjectItem(input, "query");
-    if (!query || !cJSON_IsString(query) || query->valuestring[0] == '\0') {
+    cJSON *query_j = cJSON_GetObjectItem(input, "query");
+    if (!query_j || !cJSON_IsString(query_j) || query_j->valuestring[0] == '\0') {
         cJSON_Delete(input);
         snprintf(output, output_size, "Error: Missing 'query' field");
         return ESP_ERR_INVALID_ARG;
     }
-
-    ESP_LOGI(TAG, "Searching: %s", query->valuestring);
-
-    /* Build URL */
-    char encoded_query[256];
-    url_encode(query->valuestring, encoded_query, sizeof(encoded_query));
+    char query[256];
+    strncpy(query, query_j->valuestring, sizeof(query) - 1);
     cJSON_Delete(input);
 
-    char path[384];
-    snprintf(path, sizeof(path),
-             "/res/v1/web/search?q=%s&count=%d", encoded_query, SEARCH_RESULT_COUNT);
+    ESP_LOGI(TAG, "Searching: %s", query);
 
-    /* Allocate response buffer from PSRAM */
     search_buf_t sb = {0};
     sb.data = heap_caps_calloc(1, SEARCH_BUF_SIZE, MALLOC_CAP_SPIRAM);
-    if (!sb.data) {
-        snprintf(output, output_size, "Error: Out of memory");
-        return ESP_ERR_NO_MEM;
-    }
+    if (!sb.data) { snprintf(output, output_size, "Error: Out of memory"); return ESP_ERR_NO_MEM; }
     sb.cap = SEARCH_BUF_SIZE;
 
-    /* Make HTTP request */
+    bool use_tavily = (strncmp(s_search_key, "tvly-", 5) == 0);
     esp_err_t err;
-    if (http_proxy_is_enabled()) {
-        err = search_via_proxy(path, &sb);
+
+    if (use_tavily) {
+        err = search_tavily(query, &sb);
     } else {
-        char url[512];
-        snprintf(url, sizeof(url), "https://api.search.brave.com%s", path);
-        err = search_direct(url, &sb);
+        char encoded_query[256];
+        url_encode(query, encoded_query, sizeof(encoded_query));
+        char path[384];
+        snprintf(path, sizeof(path), "/res/v1/web/search?q=%s&count=%d", encoded_query, SEARCH_RESULT_COUNT);
+        if (http_proxy_is_enabled()) {
+            err = search_via_proxy(path, &sb);
+        } else {
+            char url[512];
+            snprintf(url, sizeof(url), "https://api.search.brave.com%s", path);
+            err = search_direct(url, &sb);
+        }
     }
 
     if (err != ESP_OK) {
@@ -301,16 +368,15 @@ esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t o
         return err;
     }
 
-    /* Parse and format results */
     cJSON *root = cJSON_Parse(sb.data);
     free(sb.data);
+    if (!root) { snprintf(output, output_size, "Error: Failed to parse search results"); return ESP_FAIL; }
 
-    if (!root) {
-        snprintf(output, output_size, "Error: Failed to parse search results");
-        return ESP_FAIL;
+    if (use_tavily) {
+        format_tavily_results(root, output, output_size);
+    } else {
+        format_results(root, output, output_size);
     }
-
-    format_results(root, output, output_size);
     cJSON_Delete(root);
 
     ESP_LOGI(TAG, "Search complete, %d bytes result", (int)strlen(output));

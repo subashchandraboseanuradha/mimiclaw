@@ -63,7 +63,7 @@ esp_err_t tool_registry_init(void)
 
     mimi_tool_t ws = {
         .name = "web_search",
-        .description = "Search the web for current information. Use this when you need up-to-date facts, news, weather, or anything beyond your training data.",
+        .description = "Search the web. ONLY use for real-time info you cannot know: today's weather, live news, current prices, recent events. Do NOT use for general knowledge, math, coding, history, or anything you already know.",
         .input_schema_json =
             "{\"type\":\"object\","
             "\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"The search query\"}},"

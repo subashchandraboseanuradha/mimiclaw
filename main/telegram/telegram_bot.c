@@ -239,7 +239,7 @@ static char *tg_api_call_direct(const char *method, const char *post_data)
         .url = url,
         .event_handler = http_event_handler,
         .user_data = &resp,
-        .timeout_ms = (MIMI_TG_POLL_TIMEOUT_S + 5) * 1000,
+        .timeout_ms = post_data ? 15000 : (MIMI_TG_POLL_TIMEOUT_S + 5) * 1000,
         .buffer_size = 2048,
         .buffer_size_tx = 2048,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -425,6 +425,8 @@ static void telegram_poll_task(void *arg)
             /* Back off on error */
             vTaskDelay(pdMS_TO_TICKS(3000));
         }
+        /* Yield briefly so LLM/vision calls can acquire the network mutex */
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 

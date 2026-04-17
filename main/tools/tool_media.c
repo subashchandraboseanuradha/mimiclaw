@@ -26,6 +26,10 @@ static const char *TAG = "media_tool";
 #define MEDIA_PATH_MAX 96
 
 static char s_api_key[320] = {0};
+static char s_deepgram_key[64] = {0};
+static bool s_auth_token_scheme = false; /* true = "Token <key>", false = "Bearer <key>" */
+static char s_provider[16] = {0};
+static char s_model[64] = {0};
 static char s_last_capture_path[MEDIA_PATH_MAX] = {0};
 
 static void set_last_capture_path(const char *path)
@@ -477,7 +481,8 @@ static esp_err_t http_post_multipart(const char *url, const char *host, const ch
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
     if (s_api_key[0]) {
         char auth[360];
-        snprintf(auth, sizeof(auth), "Bearer %s", s_api_key);
+        snprintf(auth, sizeof(auth), "%s %s",
+                 s_auth_token_scheme ? "Token" : "Bearer", s_api_key);
         esp_http_client_set_header(client, "Authorization", auth);
     }
     esp_http_client_set_post_field(client, (const char *)body, body_len);
@@ -510,12 +515,27 @@ esp_err_t tool_media_init(void)
     if (MIMI_SECRET_API_KEY[0] != '\0') {
         strncpy(s_api_key, MIMI_SECRET_API_KEY, sizeof(s_api_key) - 1);
     }
+#ifdef MIMI_SECRET_DEEPGRAM_KEY
+    if (MIMI_SECRET_DEEPGRAM_KEY[0] != '\0') {
+        strncpy(s_deepgram_key, MIMI_SECRET_DEEPGRAM_KEY, sizeof(s_deepgram_key) - 1);
+    }
+#endif
     nvs_handle_t nvs;
     if (nvs_open(MIMI_NVS_LLM, NVS_READONLY, &nvs) == ESP_OK) {
         char tmp[sizeof(s_api_key)] = {0};
         size_t len = sizeof(tmp);
         if (nvs_get_str(nvs, MIMI_NVS_KEY_API_KEY, tmp, &len) == ESP_OK && tmp[0]) {
             strncpy(s_api_key, tmp, sizeof(s_api_key) - 1);
+        }
+        char ptmp[sizeof(s_provider)] = {0};
+        len = sizeof(ptmp);
+        if (nvs_get_str(nvs, MIMI_NVS_KEY_PROVIDER, ptmp, &len) == ESP_OK && ptmp[0]) {
+            strncpy(s_provider, ptmp, sizeof(s_provider) - 1);
+        }
+        char mtmp[sizeof(s_model)] = {0};
+        len = sizeof(mtmp);
+        if (nvs_get_str(nvs, MIMI_NVS_KEY_MODEL, mtmp, &len) == ESP_OK && mtmp[0]) {
+            strncpy(s_model, mtmp, sizeof(s_model) - 1);
         }
         nvs_close(nvs);
     }
@@ -613,7 +633,10 @@ esp_err_t tool_observe_scene_execute(const char *input_json, char *output, size_
         do_capture = json_get_bool(root, "capture", true);
     }
     if (!prompt || prompt[0] == '\0') prompt = "Describe the image.";
-    if (!model || model[0] == '\0') model = MIMI_ZHIPU_VISION_MODEL;
+    if (!model || model[0] == '\0') {
+        if (s_model[0]) model = s_model;
+        else model = MIMI_ZHIPU_VISION_MODEL;
+    }
 
     char auto_path[MEDIA_PATH_MAX] = {0};
     char out_path[128] = {0};
@@ -709,6 +732,28 @@ esp_err_t tool_listen_transcribe_execute(const char *input_json, char *output, s
     }
 
     const char *final_path = out_path[0] ? out_path : path;
+
+    /* Check audio level before sending — skip if mic captured silence */
+    {
+        FILE *af = fopen(final_path, "rb");
+        if (af) {
+            fseek(af, 44, SEEK_SET); /* skip WAV header */
+            int16_t samples[512];
+            size_t n = fread(samples, sizeof(int16_t), 512, af);
+            fclose(af);
+            int32_t peak = 0;
+            for (size_t i = 0; i < n; i++) {
+                int32_t v = samples[i] < 0 ? -samples[i] : samples[i];
+                if (v > peak) peak = v;
+            }
+            ESP_LOGI("tool_media", "Audio silence check: peak=%d (n=%u)", (int)peak, (unsigned)n);
+            if (n == 0 || peak < 200) {
+                snprintf(output, output_size, "I didn't hear anything. Please speak clearly and try again.");
+                return ESP_OK;
+            }
+        }
+    }
+
     cJSON *treq = cJSON_CreateObject();
     cJSON_AddStringToObject(treq, "path", final_path);
     if (model && model[0]) {
@@ -738,7 +783,10 @@ esp_err_t tool_vision_analyze_execute(const char *input_json, char *output, size
     const char *prompt = root ? json_get_string(root, "prompt") : NULL;
     const char *model = root ? json_get_string(root, "model") : NULL;
     if (!prompt || prompt[0] == '\0') prompt = "Describe the image.";
-    if (!model || model[0] == '\0') model = MIMI_ZHIPU_VISION_MODEL;
+    if (!model || model[0] == '\0') {
+        if (s_model[0]) model = s_model;
+        else model = MIMI_ZHIPU_VISION_MODEL;
+    }
 
     char *data_url = NULL;
     size_t image_len = 0;
@@ -825,7 +873,21 @@ esp_err_t tool_vision_analyze_execute(const char *input_json, char *output, size
     for (; attempts < 4; attempts++) {
         status = 0;
         resp = NULL;
-        err = http_post_json(MIMI_ZHIPU_API_URL, MIMI_ZHIPU_API_HOST, MIMI_ZHIPU_API_PATH,
+        const char *vis_url, *vis_host, *vis_path;
+        if (strcmp(s_provider, "openai") == 0) {
+            vis_url  = MIMI_OPENAI_API_URL;
+            vis_host = "api.openai.com";
+            vis_path = "/v1/chat/completions";
+        } else if (strcmp(s_provider, "openrouter") == 0) {
+            vis_url  = MIMI_OPENROUTER_API_URL;
+            vis_host = MIMI_OPENROUTER_API_HOST;
+            vis_path = MIMI_OPENROUTER_API_PATH;
+        } else {
+            vis_url  = MIMI_ZHIPU_API_URL;
+            vis_host = MIMI_ZHIPU_API_HOST;
+            vis_path = MIMI_ZHIPU_API_PATH;
+        }
+        err = http_post_json(vis_url, vis_host, vis_path,
                              payload, &resp, &status);
         if (resp) {
             free(last_resp);
@@ -904,14 +966,20 @@ esp_err_t tool_vision_analyze_execute(const char *input_json, char *output, size
 
 esp_err_t tool_audio_transcribe_execute(const char *input_json, char *output, size_t output_size)
 {
-    if (s_api_key[0] == '\0') {
-        snprintf(output, output_size, "no API key configured");
-        return ESP_ERR_INVALID_STATE;
-    }
     cJSON *root = input_json ? cJSON_Parse(input_json) : NULL;
     const char *path = root ? json_get_string(root, "path") : NULL;
     const char *model = root ? json_get_string(root, "model") : NULL;
-    if (!model || model[0] == '\0') model = MIMI_ZHIPU_ASR_MODEL;
+
+    bool use_deepgram = (s_deepgram_key[0] != '\0');
+
+    if (!use_deepgram && s_api_key[0] == '\0') {
+        if (root) cJSON_Delete(root);
+        snprintf(output, output_size, "no ASR API key configured");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!model || model[0] == '\0') {
+        model = use_deepgram ? "nova-3" : MIMI_ZHIPU_ASR_MODEL;
+    }
     if (!path || path[0] == '\0') {
         if (root) cJSON_Delete(root);
         snprintf(output, output_size, "missing 'path'");
@@ -926,48 +994,50 @@ esp_err_t tool_audio_transcribe_execute(const char *input_json, char *output, si
         if (root) cJSON_Delete(root);
         return r;
     }
-
-    const char *boundary = "----mimiFormBoundary9B4hSDJ8lP";
-    const char *part1_tmpl =
-        "--%s\r\n"
-        "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-        "%s\r\n";
-    const char *part2_tmpl =
-        "--%s\r\n"
-        "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
-        "Content-Type: audio/wav\r\n\r\n";
-    const char *part3_tmpl = "\r\n--%s--\r\n";
-
-    char part1[256];
-    char part2[256];
-    char part3[64];
-    snprintf(part1, sizeof(part1), part1_tmpl, boundary, model);
-    snprintf(part2, sizeof(part2), part2_tmpl, boundary);
-    snprintf(part3, sizeof(part3), part3_tmpl, boundary);
-
-    size_t body_len = strlen(part1) + strlen(part2) + len + strlen(part3);
-    uint8_t *body = calloc(1, body_len);
-    if (!body) {
-        free(buf);
-        if (root) cJSON_Delete(root);
-        return ESP_ERR_NO_MEM;
-    }
-    size_t off = 0;
-    memcpy(body + off, part1, strlen(part1)); off += strlen(part1);
-    memcpy(body + off, part2, strlen(part2)); off += strlen(part2);
-    memcpy(body + off, buf, len); off += len;
-    memcpy(body + off, part3, strlen(part3)); off += strlen(part3);
-    free(buf);
-
-    char content_type[128];
-    snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
+    if (root) cJSON_Delete(root);
 
     int status = 0;
     char *resp = NULL;
-    esp_err_t err = http_post_multipart(MIMI_ZHIPU_ASR_URL, MIMI_ZHIPU_ASR_HOST, MIMI_ZHIPU_ASR_PATH,
-                                        content_type, body, body_len, &resp, &status);
-    free(body);
-    if (root) cJSON_Delete(root);
+    esp_err_t err;
+
+    if (use_deepgram) {
+        /* Deepgram: POST raw WAV with Authorization: Token <key> */
+        char saved_key[sizeof(s_api_key)];
+        strncpy(saved_key, s_api_key, sizeof(saved_key) - 1);
+        saved_key[sizeof(saved_key) - 1] = '\0';
+        strncpy(s_api_key, s_deepgram_key, sizeof(s_api_key) - 1);
+        s_auth_token_scheme = true;
+        err = http_post_multipart(MIMI_DEEPGRAM_ASR_URL, MIMI_DEEPGRAM_ASR_HOST,
+                                  MIMI_DEEPGRAM_ASR_PATH,
+                                  "audio/wav", buf, len, &resp, &status);
+        s_auth_token_scheme = false;
+        strncpy(s_api_key, saved_key, sizeof(s_api_key) - 1);
+    } else {
+        /* Zhipu ASR fallback: multipart form upload */
+        const char *boundary = "----mimiFormBoundary9B4hSDJ8lP";
+        char part1[256], part2[256], part3[64];
+        snprintf(part1, sizeof(part1),
+            "--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n%s\r\n", boundary, model);
+        snprintf(part2, sizeof(part2),
+            "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n", boundary);
+        snprintf(part3, sizeof(part3), "\r\n--%s--\r\n", boundary);
+
+        size_t body_len = strlen(part1) + strlen(part2) + len + strlen(part3);
+        uint8_t *body = calloc(1, body_len);
+        if (!body) { free(buf); return ESP_ERR_NO_MEM; }
+        size_t off = 0;
+        memcpy(body + off, part1, strlen(part1)); off += strlen(part1);
+        memcpy(body + off, part2, strlen(part2)); off += strlen(part2);
+        memcpy(body + off, buf, len);             off += len;
+        memcpy(body + off, part3, strlen(part3));
+
+        char content_type[128];
+        snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
+        err = http_post_multipart(MIMI_ZHIPU_ASR_URL, MIMI_ZHIPU_ASR_HOST, MIMI_ZHIPU_ASR_PATH,
+                                  content_type, body, body_len, &resp, &status);
+        free(body);
+    }
+    free(buf);
 
     if (err != ESP_OK) {
         snprintf(output, output_size, "asr request failed: %s", esp_err_to_name(err));
@@ -984,17 +1054,34 @@ esp_err_t tool_audio_transcribe_execute(const char *input_json, char *output, si
         free(resp);
         return ESP_FAIL;
     }
+    ESP_LOGI("tool_media", "ASR raw response (status=%d): %.300s", status, resp);
     cJSON *j = cJSON_Parse(resp);
     if (!j) {
-        snprintf(output, output_size, "asr API returned invalid JSON (len=%u): %.200s",
-                 (unsigned)strlen(resp), resp);
+        snprintf(output, output_size, "asr API returned invalid JSON: %.200s", resp);
         free(resp);
         return ESP_FAIL;
     }
-    cJSON *text = cJSON_GetObjectItem(j, "text");
-    if (text && cJSON_IsString(text)) {
-        snprintf(output, output_size, "%s", text->valuestring);
+
+    /* Deepgram response: results.channels[0].alternatives[0].transcript */
+    const char *transcript = NULL;
+    if (use_deepgram) {
+        cJSON *results = cJSON_GetObjectItem(j, "results");
+        cJSON *channels = results ? cJSON_GetObjectItem(results, "channels") : NULL;
+        cJSON *ch0 = (channels && cJSON_IsArray(channels)) ? cJSON_GetArrayItem(channels, 0) : NULL;
+        cJSON *alts = ch0 ? cJSON_GetObjectItem(ch0, "alternatives") : NULL;
+        cJSON *alt0 = (alts && cJSON_IsArray(alts)) ? cJSON_GetArrayItem(alts, 0) : NULL;
+        cJSON *t = alt0 ? cJSON_GetObjectItem(alt0, "transcript") : NULL;
+        if (t && cJSON_IsString(t)) transcript = t->valuestring;
     } else {
+        cJSON *t = cJSON_GetObjectItem(j, "text");
+        if (t && cJSON_IsString(t)) transcript = t->valuestring;
+    }
+
+    if (transcript && transcript[0] != '\0') {
+        ESP_LOGI("tool_media", "ASR transcript: [%s]", transcript);
+        snprintf(output, output_size, "%s", transcript);
+    } else {
+        ESP_LOGW("tool_media", "ASR transcript empty — raw resp: %.400s", resp);
         snprintf(output, output_size, "%s", resp);
     }
     cJSON_Delete(j);

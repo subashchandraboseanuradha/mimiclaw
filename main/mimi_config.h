@@ -59,7 +59,7 @@
 #define MIMI_WIFI_RETRY_MAX_MS       30000
 
 /* Telegram Bot */
-#define MIMI_TG_POLL_TIMEOUT_S       30
+#define MIMI_TG_POLL_TIMEOUT_S       5
 #define MIMI_TG_MAX_MSG_LEN          4096
 #define MIMI_TG_POLL_STACK           (12 * 1024)
 #define MIMI_TG_POLL_PRIO            5
@@ -112,6 +112,9 @@
 #define MIMI_LLM_HTTP_MAX_RETRY      3
 #define MIMI_LLM_API_URL             "https://api.anthropic.com/v1/messages"
 #define MIMI_OPENAI_API_URL          "https://api.openai.com/v1/chat/completions"
+#define MIMI_OPENROUTER_API_URL      "https://openrouter.ai/api/v1/chat/completions"
+#define MIMI_OPENROUTER_API_HOST     "openrouter.ai"
+#define MIMI_OPENROUTER_API_PATH     "/api/v1/chat/completions"
 #define MIMI_ZHIPU_CODING_API_URL    "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 #define MIMI_ZHIPU_CODING_API_HOST   "open.bigmodel.cn"
 #define MIMI_ZHIPU_CODING_API_PATH   "/api/coding/paas/v4/chat/completions"
@@ -122,7 +125,16 @@
 #define MIMI_ZHIPU_ASR_HOST          "open.bigmodel.cn"
 #define MIMI_ZHIPU_ASR_PATH          "/api/paas/v4/audio/transcriptions"
 #define MIMI_ZHIPU_ASR_MODEL         "glm-asr-2512"
+#define MIMI_GROQ_ASR_URL            "https://api.groq.com/openai/v1/audio/transcriptions"
+#define MIMI_GROQ_ASR_HOST           "api.groq.com"
+#define MIMI_GROQ_ASR_PATH           "/openai/v1/audio/transcriptions"
+#define MIMI_GROQ_ASR_MODEL          "whisper-large-v3-turbo"
+#define MIMI_DEEPGRAM_ASR_URL        "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true"
+#define MIMI_DEEPGRAM_ASR_HOST       "api.deepgram.com"
+#define MIMI_DEEPGRAM_ASR_PATH       "/v1/listen?model=nova-3&smart_format=true"
 #define MIMI_ZHIPU_VISION_MODEL      "glm-4.6v"
+#define MIMI_GEMINI_API_HOST         "generativelanguage.googleapis.com"
+#define MIMI_GEMINI_API_URL          "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
 #define MIMI_LLM_API_VERSION         "2023-06-01"
 #define MIMI_LLM_STREAM_BUF_SIZE     (32 * 1024)
 #define MIMI_LLM_LOG_VERBOSE_PAYLOAD 0
@@ -173,6 +185,8 @@
 #define MIMI_NVS_PROXY               "proxy_config"
 #define MIMI_NVS_SEARCH              "search_config"
 #define MIMI_NVS_BRIDGE              "bridge_config"
+#define MIMI_NVS_GROQ                "groq_config"
+#define MIMI_NVS_KEY_GROQ_KEY        "api_key"
 
 /* NVS Keys */
 #define MIMI_NVS_KEY_SSID            "ssid"

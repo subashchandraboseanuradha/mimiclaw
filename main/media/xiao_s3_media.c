@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_camera.h"
+#include "esp_camera_af.h"
 #include "esp_psram.h"
 #include "driver/i2s_pdm.h"
 #include "driver/gpio.h"
@@ -39,9 +40,15 @@ static const char *TAG = "xiao_media";
 
 static bool s_cam_ready = false;
 static bool s_mic_ready = false;
+static volatile bool s_record_stop = false;
+static int s_record_stop_gpio = -1; /* GPIO to poll for stop (active-high, stop when low) */
 
 static bool camera_ready(void) { return s_cam_ready; }
 static bool mic_ready(void) { return s_mic_ready; }
+
+void media_xiao_s3_record_stop(void)       { s_record_stop = true; }
+void media_xiao_s3_record_stop_reset(void) { s_record_stop = false; }
+void media_xiao_s3_set_stop_gpio(int gpio_num) { s_record_stop_gpio = gpio_num; }
 
 static esp_err_t camera_set_framesize_impl(int framesize)
 {
@@ -68,6 +75,11 @@ static esp_err_t camera_get_status_impl(int *framesize, int *quality)
 static esp_err_t camera_capture_impl(const char *path, char *out_path, size_t out_size)
 {
     if (!s_cam_ready) return ESP_ERR_INVALID_STATE;
+
+#if defined(CONFIG_CAMERA_AF_SUPPORT) && CONFIG_CAMERA_AF_SUPPORT
+    esp_camera_af_trigger();
+    esp_camera_af_wait(2000);
+#endif
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
@@ -135,14 +147,15 @@ static esp_err_t audio_record_impl(const char *path, int duration_ms, char *out_
     if (duration_ms <= 0) duration_ms = 3000;
 
     uint32_t target_bytes = (bytes_per_sec * (uint32_t)duration_ms) / 1000;
-    if (target_bytes > (1024 * 1024)) target_bytes = 1024 * 1024;
+    if (target_bytes > (4 * 1024 * 1024)) target_bytes = 4 * 1024 * 1024;
 
-    FILE *f = fopen(path, "wb");
+    /* Write raw PCM to temp file, then assemble WAV after — SPIFFS can't seek to patch header */
+    const char *tmp_path = "/spiffs/media/audio.raw";
+    FILE *f = fopen(tmp_path, "wb");
     if (!f) {
-        ESP_LOGE(TAG, "Failed to open audio file: %s", path);
+        ESP_LOGE(TAG, "Failed to open temp audio file");
         return ESP_FAIL;
     }
-    write_wav_header(f, sample_rate, bits, channels, 0);
 
     i2s_chan_handle_t rx_chan = NULL;
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -170,6 +183,19 @@ static esp_err_t audio_record_impl(const char *path, int duration_ms, char *out_
     }
     i2s_channel_enable(rx_chan);
 
+    /* Discard first 200ms — PDM mic needs time to settle */
+    {
+        uint8_t tmp[2048];
+        size_t dummy = 0;
+        uint32_t discard = (sample_rate * 2 * 200) / 1000; /* 200ms worth of bytes */
+        uint32_t discarded = 0;
+        while (discarded < discard) {
+            size_t rd = (discard - discarded < sizeof(tmp)) ? (discard - discarded) : sizeof(tmp);
+            i2s_channel_read(rx_chan, tmp, rd, &dummy, pdMS_TO_TICKS(500));
+            discarded += dummy ? dummy : rd;
+        }
+    }
+
     uint8_t *buf = calloc(1, 2048);
     if (!buf) {
         i2s_channel_disable(rx_chan);
@@ -178,29 +204,57 @@ static esp_err_t audio_record_impl(const char *path, int duration_ms, char *out_
         return ESP_ERR_NO_MEM;
     }
 
+    const int gain = 6;
+
+    /* Do NOT clear s_record_stop here — caller resets it before starting watcher */
     uint32_t written = 0;
+    int32_t peak_raw = 0;
     while (written < target_bytes) {
-        size_t to_read = 2048;
-        if (target_bytes - written < to_read) {
-            to_read = target_bytes - written;
-        }
+        if (s_record_stop) break;
         size_t bytes_read = 0;
-        esp_err_t err = i2s_channel_read(rx_chan, buf, to_read, &bytes_read, portMAX_DELAY);
-        if (err != ESP_OK || bytes_read == 0) {
-            break;
+        /* portMAX_DELAY — watcher task sets s_record_stop to unblock next iteration */
+        esp_err_t err = i2s_channel_read(rx_chan, buf, 2048, &bytes_read, portMAX_DELAY);
+        if (err != ESP_OK || bytes_read == 0) break;
+        int16_t *samples = (int16_t *)buf;
+        size_t num_samples = bytes_read / 2;
+        for (size_t i = 0; i < num_samples; i++) {
+            int32_t raw = samples[i];
+            if (raw < 0 && -raw > peak_raw) peak_raw = -raw;
+            if (raw > peak_raw) peak_raw = raw;
+            int32_t amplified = raw * gain;
+            if (amplified > 32767)  amplified = 32767;
+            if (amplified < -32768) amplified = -32768;
+            samples[i] = (int16_t)amplified;
         }
         fwrite(buf, 1, bytes_read, f);
         written += bytes_read;
     }
+    ESP_LOGI(TAG, "Audio peak raw=%d post-gain=%d (gain=%d)", (int)peak_raw, (int)(peak_raw * gain > 32767 ? 32767 : peak_raw * gain), gain);
 
     free(buf);
     i2s_channel_disable(rx_chan);
     i2s_del_channel(rx_chan);
-
-    /* Patch WAV header with actual length */
-    fseek(f, 0, SEEK_SET);
-    write_wav_header(f, sample_rate, bits, channels, written);
     fclose(f);
+
+    /* Assemble final WAV: header + raw PCM */
+    FILE *raw = fopen(tmp_path, "rb");
+    FILE *wav = fopen(path, "wb");
+    if (!raw || !wav) {
+        if (raw) fclose(raw);
+        if (wav) fclose(wav);
+        ESP_LOGE(TAG, "Failed to open files for WAV assembly");
+        return ESP_FAIL;
+    }
+    write_wav_header(wav, sample_rate, bits, channels, written);
+    uint8_t *copy_buf = malloc(2048);
+    if (copy_buf) {
+        size_t n;
+        while ((n = fread(copy_buf, 1, 2048, raw)) > 0) fwrite(copy_buf, 1, n, wav);
+        free(copy_buf);
+    }
+    fclose(raw);
+    fclose(wav);
+    remove(tmp_path);
 
     s_mic_ready = true;
     if (out_path && out_size > 0) {

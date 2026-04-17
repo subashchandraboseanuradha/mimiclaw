@@ -53,3 +53,6 @@ nanobot/
 .DS_Store
 Thumbs.db
 references/
+
+# Claude Code
+.claude/

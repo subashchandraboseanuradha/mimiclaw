@@ -35,6 +35,9 @@
 #include "buttons/button_driver.h"
 #include "imu/imu_manager.h"
 #include "skills/skill_loader.h"
+#include "tools/tool_media.h"
+#include "media/xiao_s3_media.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "mimi";
 
@@ -175,6 +178,138 @@ static void outbound_dispatch_task(void *arg)
     }
 }
 
+#define TOUCH_GPIO                4
+#define TOUCH_LONG_PRESS_MIN_MS   500
+#define TOUCH_POLL_MS             50
+#define TOUCH_MAX_RECORD_MS       60000
+#define TOUCH_CHANNEL             "telegram"
+#define TOUCH_CHAT_ID             "685919067"
+
+static void touch_gpio_watcher_task(void *arg)
+{
+    /* Polls TOUCH_GPIO and signals recording to stop when finger lifts */
+    while (gpio_get_level(TOUCH_GPIO) == 1) {
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
+    media_xiao_s3_record_stop();
+    vTaskDelete(NULL);
+}
+
+static void touch_send_transcription(const char *transcription)
+{
+    if (transcription[0] == '\0') {
+        mimi_msg_t msg = {0};
+        strncpy(msg.channel, TOUCH_CHANNEL, sizeof(msg.channel) - 1);
+        strncpy(msg.chat_id,  TOUCH_CHAT_ID,  sizeof(msg.chat_id)  - 1);
+        msg.content = strdup("🎤 Could not transcribe audio.");
+        if (msg.content) message_bus_push_outbound(&msg);
+    } else if (strncmp(transcription, "I didn't hear", 13) == 0) {
+        mimi_msg_t msg = {0};
+        strncpy(msg.channel, TOUCH_CHANNEL, sizeof(msg.channel) - 1);
+        strncpy(msg.chat_id,  TOUCH_CHAT_ID,  sizeof(msg.chat_id)  - 1);
+        msg.content = strdup("🎤 I didn't hear anything. Please speak clearly and try again.");
+        if (msg.content) message_bus_push_outbound(&msg);
+    } else {
+        char echo[560];
+        snprintf(echo, sizeof(echo), "🎤 *You said:* %s", transcription);
+        mimi_msg_t echo_msg = {0};
+        strncpy(echo_msg.channel, TOUCH_CHANNEL, sizeof(echo_msg.channel) - 1);
+        strncpy(echo_msg.chat_id,  TOUCH_CHAT_ID,  sizeof(echo_msg.chat_id)  - 1);
+        echo_msg.content = strdup(echo);
+        if (echo_msg.content) message_bus_push_outbound(&echo_msg);
+
+        mimi_msg_t msg = {0};
+        strncpy(msg.channel, TOUCH_CHANNEL, sizeof(msg.channel) - 1);
+        strncpy(msg.chat_id,  TOUCH_CHAT_ID,  sizeof(msg.chat_id)  - 1);
+        msg.content = strdup(transcription);
+        if (msg.content) message_bus_push_inbound(&msg);
+    }
+}
+
+static void touch_trigger_task(void *arg)
+{
+    (void)arg;
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << TOUCH_GPIO),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
+    bool was_pressed = false;
+    int64_t press_start_us = 0;
+
+    while (1) {
+        bool pressed = (gpio_get_level(TOUCH_GPIO) == 1);
+
+        if (pressed && !was_pressed) {
+            /* Finger down — just record the time */
+            press_start_us = esp_timer_get_time();
+            was_pressed = true;
+
+        } else if (pressed && was_pressed) {
+            int64_t held_ms = (esp_timer_get_time() - press_start_us) / 1000;
+            if (held_ms >= TOUCH_LONG_PRESS_MIN_MS) {
+                ESP_LOGI(TAG, "Touch: long press → recording while held");
+                was_pressed = false; /* prevent re-entry */
+
+                /* Reset stop flag before watcher starts */
+                media_xiao_s3_record_stop_reset();
+                /* Watcher task on core 0 sets stop flag when finger lifts */
+                xTaskCreatePinnedToCore(touch_gpio_watcher_task, "gpio_watch",
+                                        2048, NULL, 7, NULL, 0);
+                /* Record blocks here on core 1 until stop flag is set */
+                media_audio_record(MIMI_SPIFFS_BASE "/media/audio.wav",
+                                   TOUCH_MAX_RECORD_MS, NULL, 0);
+
+                /* Silence check */
+                bool silent = true;
+                FILE *chk = fopen(MIMI_SPIFFS_BASE "/media/audio.wav", "rb");
+                if (chk) {
+                    fseek(chk, 44, SEEK_SET);
+                    int16_t smp[256];
+                    size_t n = fread(smp, sizeof(int16_t), 256, chk);
+                    fclose(chk);
+                    for (size_t i = 0; i < n; i++) {
+                        int32_t v = smp[i] < 0 ? -smp[i] : smp[i];
+                        if (v > 200) { silent = false; break; }
+                    }
+                }
+
+                char transcription[512] = {0};
+                if (silent) {
+                    strncpy(transcription, "I didn't hear", sizeof(transcription) - 1);
+                } else {
+                    tool_audio_transcribe_execute(
+                        "{\"path\":\"" MIMI_SPIFFS_BASE "/media/audio.wav\"}",
+                        transcription, sizeof(transcription));
+                }
+                touch_send_transcription(transcription);
+            }
+
+        } else if (!pressed && was_pressed) {
+            int64_t held_ms = (esp_timer_get_time() - press_start_us) / 1000;
+            was_pressed = false;
+            if (held_ms < TOUCH_LONG_PRESS_MIN_MS) {
+                /* Short tap — take photo */
+                ESP_LOGI(TAG, "Touch: single tap → observe_scene");
+                char output[512] = {0};
+                tool_observe_scene_execute("{\"prompt\":\"Describe what you see.\"}", output, sizeof(output));
+                mimi_msg_t msg = {0};
+                strncpy(msg.channel, TOUCH_CHANNEL, sizeof(msg.channel) - 1);
+                strncpy(msg.chat_id,  TOUCH_CHAT_ID,  sizeof(msg.chat_id)  - 1);
+                msg.content = strdup(output[0] ? output : "Could not capture image.");
+                if (msg.content) message_bus_push_outbound(&msg);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+    }
+}
+
 void app_main(void)
 {
     /* Reduce noisy IMU logs during CLI input */
@@ -254,6 +389,9 @@ void app_main(void)
             cron_service_start();
             heartbeat_start();
             ESP_ERROR_CHECK(ws_server_start());
+
+            xTaskCreatePinnedToCore(touch_trigger_task, "touch",
+                16384, NULL, 4, NULL, 1);
 
             ESP_LOGI(TAG, "All services started!");
         } else {
